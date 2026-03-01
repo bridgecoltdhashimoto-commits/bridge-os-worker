@@ -32,9 +32,16 @@ export default {
     // 署名検証（SQUARE_SIGNATURE_KEY or SQUARE_SIGNATURE_KEY_PRODUCTION を使う）
     const signatureKey = env.SQUARE_SIGNATURE_KEY || env.SQUARE_SIGNATURE_KEY_PRODUCTION;
     const signatureHeader = request.headers.get('x-square-signature');
+        if (!signatureKey) {
+      console.error('AUTH_FAIL_ENV: missing signature key');
+    }
+    if (!signatureHeader) {
+      console.error('AUTH_FAIL_TOKEN: missing x-square-signature header');
+    }
     if (signatureKey && signatureHeader) {
       const valid = await verifySquareSignature(signatureKey, bodyText, signatureHeader);
       if (!valid) {
+          console.erro'AUTH_FAIL_SIGNATURE: signature mismatch');
         return new Response('Unauthorized', { status: 401 });
       }
     }
