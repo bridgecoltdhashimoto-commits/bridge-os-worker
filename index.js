@@ -9,6 +9,10 @@ export default {
     // GETはヘルスチェック用
     if (request.method !== 'POST') {
       return new Response('OK', { status: 200 });
+        // URL検証: env.WEBHOOK_URLに一致しない場合ログ出力
+        if (env.WEBHOOK_URL && request.url && request.url !== env.WEBHOOK_URL) {
+          console.error('AUTH_FAIL_URL: url mismatch', { url: request.url });
+        }
     }
 
     let bodyText;
