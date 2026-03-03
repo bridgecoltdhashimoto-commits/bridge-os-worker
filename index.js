@@ -33,8 +33,18 @@ export default {
     if (seenData.seen) return new Response("DUPLICATE", { status: 200 });
     await stub.fetch("http://dedupe/mark", { method: "POST" });
 
-    // Squareから届いた生の全データをそのままキューへ送信（欠落を防止）
-    await env.SQUARE_QUEUE.send(json);
+    // 【重要】GASがそのままシートに書けるように、データを1つずつ整理して「パッキング」する
+    var payload = {
+      received_at: new Date().toISOString(),
+      status: "PENDING",
+      payment_id: (json.data && json.data.object && json.data.object.payment) ? json.data.object.payment.id : "N/A",
+      event_id: eventId,
+      buyer_email: (json.data && json.data.object && json.data.object.payment) ? json.data.object.payment.buyer_email_address : "N/A",
+      amount: (json.data && json.data.object && json.data.object.payment && json.data.object.payment.amount_money) ? json.data.object.payment.amount_money.amount : 0,
+      currency: (json.data && json.data.object && json.data.object.payment && json.data.object.payment.amount_money) ? json.data.object.payment.amount_money.currency : "JPY"
+    };
+
+    await env.SQUARE_QUEUE.send(payload);
     return new Response("SUCCESS", { status: 200 });
   },
   async queue(batch, env) {
