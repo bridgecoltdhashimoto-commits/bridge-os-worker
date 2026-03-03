@@ -1,198 +1,65 @@
-// Cloudflare Worker for BRIDGE OS Square Webhooks
-// このWorkerはSquareのpayment.updatedイベントを受信し、署名検証・重複判定を行って
-// Cloudflare Queueにジョブを投入します。キューのコンシューマがGASへ転送します。
-
-export { DedupeObject } from './dedupe.js';
+/**
+ * BRIDGE OS: Stable Gateway (v1.1.2)
+ * - Square HMAC-SHA256 署名検証の厳格化
+ * - 401エラーの解消と詳細ログ
+ */
 
 export default {
-  async fetch(request, env, ctx) {
-    // GETはヘルスチェック用
-    if (request.method !== 'POST') {
-      return new Response('OK', { status: 200 });
+  async fetch(request, env) {
+    if (request.method === "GET") return new Response("OK", { status: 200 });
+
+    const signature = request.headers.get("x-square-hmacsha256-signature");
+    const body = await request.text();
+    const rid = crypto.randomUUID();
+
+    // 署名検証ロジック
+    const isAuthorized = await verifySquareSignature(
+      env.SQUARE_WEBHOOK_SIGNATURE_KEY,
+      env.SQUARE_WEBHOOK_URL,
+      body,
+      signature
+    );
+
+    if (!isAuthorized) {
+      console.error(`[${rid}] AUTH_FAIL: Signature mismatch`);
+      return new Response("UNAUTHORIZED", { status: 401 });
     }
 
-    let bodyText;
-    try {
-      bodyText = await request.text();
-    } catch {
-      return new Response('Bad Request', { status: 400 });
-    }
-
-    if (!bodyText) {
-      return new Response('Bad Request: empty body', { status: 400 });
-    }
-
-    // JSON解析
-    let event;
-    try {
-      event = JSON.parse(bodyText);
-    } catch {
-      return new Response('Bad Request: invalid JSON', { status: 400 });
-    }
-
-    // Webhook URL整合性チェック（設定されていれば現在のrequest.urlと比較）
-    if (env.WEBHOOK_URL) {
-      try {
-        // 過剰なパスを無視するためにstartsWithで判定
-        const reqUrl = request.url || '';
-        if (!reqUrl.startsWith(env.WEBHOOK_URL)) {
-          // 設定URLと異なるアクセスはログに残すのみ
-          console.error('AUTH_FAIL_URL: unexpected webhook endpoint', {
-            expected: env.WEBHOOK_URL,
-            received: reqUrl,
-          });
-        }
-      } catch (e) {
-        console.error('AUTH_FAIL_UNKNOWN: url check error', e);
-      }
-    }
-
-    // 署名検証（SQUARE_SIGNATURE_KEY or SQUARE_SIGNATURE_KEY_PRODUCTION を使う）
-    const signatureKey =
-      env.SQUARE_SIGNATURE_KEY || env.SQUARE_SIGNATURE_KEY_PRODUCTION;
-    const signatureHeader = request.headers.get('x-square-signature');
-
-    if (!signatureKey) {
-      console.error('AUTH_FAIL_ENV: missing signature key');
-    }
-
-    if (!signatureHeader) {
-      console.error('AUTH_FAIL_TOKEN: missing x-square-signature header');
-    }
-
-    if (signatureKey && signatureHeader) {
-      try {
-        const valid = await verifySquareSignature(
-          signatureKey,
-          bodyText,
-          signatureHeader
-        );
-        if (!valid) {
-          console.error('AUTH_FAIL_SIGNATURE: signature mismatch');
-          return new Response('Unauthorized', { status: 401 });
-        }
-      } catch (e) {
-        // 署名検証で予期しないエラー
-        console.error('AUTH_FAIL_UNKNOWN: signature verification error', e);
-        return new Response('Unauthorized', { status: 401 });
-      }
-    }
-
-    // 支払い更新イベントのみ処理
-    const type = event?.type || '';
-    if (type !== 'payment.updated') {
-      return new Response('IGNORED', { status: 200 });
-    }
-
-    // event_id と payment_id の取得
-    const eventId = event?.event_id || event?.data?.id || event?.id;
-    const paymentId = event?.data?.object?.payment?.id || event?.data?.id;
-
-    if (!eventId || !paymentId) {
-      return new Response('Bad Request: missing event_id or payment_id', {
-        status: 400,
-      });
-    }
-
-    // デバッグ用フラグ（trueで重複検知をバイパス）
-    const bypass =
-      env.DEBUG_BYPASS_DEDUPE === 'true' || env.DEBUG_BYPASS_DEDUPE === true;
-
-    // Durable Objectによる重複検知
-    const dedupe = env.DEDUPE_OBJ;
-    if (!bypass && dedupe) {
-      const id = dedupe.idFromName(eventId);
-      const stub = dedupe.get(id);
-
-      const seenResp = await stub.fetch('https://dedupe/seen');
-      const seen = (await seenResp.json()).seen;
-
-      if (seen) {
-        return new Response('DUPLICATE', { status: 200 });
-      }
-
-      // mark as processed
-      await stub.fetch('https://dedupe/mark', { method: 'POST' });
-    }
-
-    // キューに投入するジョブペイロード（最小限）
-    const job = {
-      provider: 'SQUARE',
-      payment_id: paymentId,
-      event_id: eventId,
-      event_type: type,
-      hint_email: event?.data?.object?.payment?.buyer_email_address || '',
+    const json = JSON.parse(body);
+    const payload = {
+      bridge_token: env.BRIDGEOS_WEBHOOK_TOKEN,
+      event_id: json.event_id || json.id,
+      payment_id: json.data?.object?.payment?.id || "",
+      hint_email: json.data?.object?.payment?.buyer_email_address || "",
+      rid: rid
     };
 
-    // queue送信。bindingが無ければエラー応答
-    if (!env.SQUARE_QUEUE) {
-      return new Response('Server Error: queue missing', { status: 500 });
-    }
-
-    try {
-      // 文字列ではなくオブジェクトのまま送る
-      await env.SQUARE_QUEUE.send(job);
-    } catch (e) {
-      // 送信失敗時はdedupe状態を戻す
-      if (!bypass && dedupe) {
-        const id = dedupe.idFromName(eventId);
-        const stub = dedupe.get(id);
-        await stub.fetch('https://dedupe/clear', { method: 'POST' });
-      }
-      console.error('AUTH_FAIL_UNKNOWN: enqueue failed', e);
-      return new Response('Server Error: enqueue failed', { status: 500 });
-    }
-
-    return new Response('OK', { status: 200 });
+    // Queueへ送信
+    await env.BRIDGE_QUEUE.send(payload);
+    return new Response("SUCCESS", { status: 200 });
   },
 
-  async queue(batch, env, ctx) {
-    // キューコンシューマ：バッチでGASへ転送
+  async queue(batch, env) {
     for (const msg of batch.messages) {
-      const job =
-        typeof msg.body === 'string' ? JSON.parse(msg.body) : msg.body;
-      try {
-        await fetch(env.GAS_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(job),
-        });
-        await msg.ack();
-      } catch {
-        // エラー時はackせずに再試行させる
-      }
+      await fetch(env.GAS_WEBHOOK_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(msg.body)
+      });
+      msg.ack();
     }
-  },
+  }
 };
 
-// Square署名検証関数
-async function verifySquareSignature(secret, body, signature) {
-  const parts = signature.split('=');
-  const sigHex = parts.length === 2 ? parts[1] : parts[0];
-  const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
+async function verifySquareSignature(key, url, body, signature) {
+  if (!signature) return false;
+  const encoder = new TextEncoder();
+  const hmacKey = await crypto.subtle.importKey(
+    "raw", encoder.encode(key),
+    { name: "HMAC", hash: "SHA-256" },
+    false, ["sign"]
   );
-  const signatureBuf = await crypto.subtle.sign(
-    'HMAC',
-    key,
-    new TextEncoder().encode(body)
-  );
-  const signatureHex = Array.from(new Uint8Array(signatureBuf))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-  return timingSafeEqual(signatureHex, sigHex.toLowerCase());
-}
-
-// タイミングセーフな文字列比較
-function timingSafeEqual(a, b) {
-  if (a.length !== b.length) return false;
-  let res = 0;
-  for (let i = 0; i < a.length; i++) {
-    res |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  }
-  return res === 0;
+  const signatureBin = await crypto.subtle.sign("HMAC", hmacKey, encoder.encode(url + body));
+  const expected = btoa(String.fromCharCode(...new Uint8Array(signatureBin)));
+  return expected === signature;
 }
