@@ -9,10 +9,6 @@ export default {
     // GETはヘルスチェック用
     if (request.method !== 'POST') {
       return new Response('OK', { status: 200 });
-        // URL検証: env.WEBHOOK_URLに一致しない場合ログ出力
-        if (env.WEBHOOK_URL && request.url && request.url !== env.WEBHOOK_URL) {
-          console.error('AUTH_FAIL_URL: url mismatch', { url: request.url });
-        }
     }
 
     let bodyText;
@@ -34,6 +30,23 @@ export default {
       return new Response('Bad Request: invalid JSON', { status: 400 });
     }
 
+    // Webhook URL整合性チェック（設定されていれば現在のrequest.urlと比較）
+    if (env.WEBHOOK_URL) {
+      try {
+        // 過剰なパスを無視するためにstartsWithで判定
+        const reqUrl = request.url || '';
+        if (!reqUrl.startsWith(env.WEBHOOK_URL)) {
+          // 設定URLと異なるアクセスはログに残すのみ
+          console.error('AUTH_FAIL_URL: unexpected webhook endpoint', {
+            expected: env.WEBHOOK_URL,
+            received: reqUrl,
+          });
+        }
+      } catch (e) {
+        console.error('AUTH_FAIL_UNKNOWN: url check error', e);
+      }
+    }
+
     // 署名検証（SQUARE_SIGNATURE_KEY or SQUARE_SIGNATURE_KEY_PRODUCTION を使う）
     const signatureKey =
       env.SQUARE_SIGNATURE_KEY || env.SQUARE_SIGNATURE_KEY_PRODUCTION;
@@ -48,14 +61,19 @@ export default {
     }
 
     if (signatureKey && signatureHeader) {
-      const valid = await verifySquareSignature(
-        signatureKey,
-        bodyText,
-        signatureHeader
-      );
-
-      if (!valid) {
-        console.error('AUTH_FAIL_SIGNATURE: signature mismatch');
+      try {
+        const valid = await verifySquareSignature(
+          signatureKey,
+          bodyText,
+          signatureHeader
+        );
+        if (!valid) {
+          console.error('AUTH_FAIL_SIGNATURE: signature mismatch');
+          return new Response('Unauthorized', { status: 401 });
+        }
+      } catch (e) {
+        // 署名検証で予期しないエラー
+        console.error('AUTH_FAIL_UNKNOWN: signature verification error', e);
         return new Response('Unauthorized', { status: 401 });
       }
     }
@@ -72,7 +90,7 @@ export default {
 
     if (!eventId || !paymentId) {
       return new Response('Bad Request: missing event_id or payment_id', {
-        status: 400
+        status: 400,
       });
     }
 
@@ -103,7 +121,7 @@ export default {
       payment_id: paymentId,
       event_id: eventId,
       event_type: type,
-      hint_email: event?.data?.object?.payment?.buyer_email_address || ''
+      hint_email: event?.data?.object?.payment?.buyer_email_address || '',
     };
 
     // queue送信。bindingが無ければエラー応答
@@ -114,14 +132,14 @@ export default {
     try {
       // 文字列ではなくオブジェクトのまま送る
       await env.SQUARE_QUEUE.send(job);
-    } catch {
+    } catch (e) {
       // 送信失敗時はdedupe状態を戻す
       if (!bypass && dedupe) {
         const id = dedupe.idFromName(eventId);
         const stub = dedupe.get(id);
         await stub.fetch('https://dedupe/clear', { method: 'POST' });
       }
-
+      console.error('AUTH_FAIL_UNKNOWN: enqueue failed', e);
       return new Response('Server Error: enqueue failed', { status: 500 });
     }
 
@@ -133,27 +151,24 @@ export default {
     for (const msg of batch.messages) {
       const job =
         typeof msg.body === 'string' ? JSON.parse(msg.body) : msg.body;
-
       try {
         await fetch(env.GAS_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(job)
+          body: JSON.stringify(job),
         });
-
         await msg.ack();
       } catch {
         // エラー時はackせずに再試行させる
       }
     }
-  }
+  },
 };
 
 // Square署名検証関数
 async function verifySquareSignature(secret, body, signature) {
   const parts = signature.split('=');
   const sigHex = parts.length === 2 ? parts[1] : parts[0];
-
   const key = await crypto.subtle.importKey(
     'raw',
     new TextEncoder().encode(secret),
@@ -161,28 +176,23 @@ async function verifySquareSignature(secret, body, signature) {
     false,
     ['sign']
   );
-
   const signatureBuf = await crypto.subtle.sign(
     'HMAC',
     key,
     new TextEncoder().encode(body)
   );
-
   const signatureHex = Array.from(new Uint8Array(signatureBuf))
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
-
   return timingSafeEqual(signatureHex, sigHex.toLowerCase());
 }
 
 // タイミングセーフな文字列比較
 function timingSafeEqual(a, b) {
   if (a.length !== b.length) return false;
-
   let res = 0;
   for (let i = 0; i < a.length; i++) {
     res |= a.charCodeAt(i) ^ b.charCodeAt(i);
   }
-
   return res === 0;
 }
