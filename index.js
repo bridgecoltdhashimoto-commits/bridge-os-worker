@@ -1,4 +1,3 @@
-/** DedupeObject Class */
 export class DedupeObject {
   constructor(state) { this.state = state; }
   async fetch(request) {
@@ -17,7 +16,6 @@ export class DedupeObject {
   async alarm() { await this.state.storage.deleteAll(); }
 }
 
-/** Main Handler */
 export default {
   async fetch(request, env) {
     if (request.method === "GET") return new Response("BRIDGE OS: ACTIVE", { status: 200 });
@@ -35,22 +33,22 @@ export default {
     if (seenData.seen) return new Response("DUPLICATE", { status: 200 });
     await stub.fetch("http://dedupe/mark", { method: "POST" });
 
-    await env.SQUARE_QUEUE.send({
-      payment_id: json.data?.object?.payment?.id || "",
-      hint_email: json.data?.object?.payment?.buyer_email_address || "",
-      rid: crypto.randomUUID()
-    });
+    // Squareから届いた生の全データをそのままキューへ送信（欠落を防止）
+    await env.SQUARE_QUEUE.send(json);
     return new Response("SUCCESS", { status: 200 });
   },
   async queue(batch, env) {
     for (var msg of batch.messages) {
-      await fetch(env.GAS_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(msg.body) });
+      await fetch(env.GAS_URL, { 
+        method: "POST", 
+        headers: { "Content-Type": "application/json" }, 
+        body: JSON.stringify(msg.body) 
+      });
       msg.ack();
     }
   }
 };
 
-/** Verification Logic */
 async function verifySquareSignature(key, url, body, signature) {
   if (!signature || !key || !url) return false;
   var encoder = new TextEncoder();
