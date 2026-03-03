@@ -2,11 +2,25 @@
 export default {
   async fetch(request, env) {
     if (request.method === "GET") return new Response("OK", { status: 200 });
-    const rid = crypto.randomUUID();
+
+    const signature = request.headers.get("x-square-hmacsha256-signature");
     const body = await request.text();
+    const rid = crypto.randomUUID();
+
+    // 署名検証（Square公式サイト準拠の精密ロジック）
+    const isAuthorized = await verifySquareSignature(
+      env.SQUARE_WEBHOOK_SIGNATURE_KEY,
+      env.SQUARE_WEBHOOK_URL,
+      body,
+      signature
+    );
+
+    if (!isAuthorized) {
+      console.error(`[${rid}] AUTH_FAIL_SIGNATURE: mismatch`);
+      return new Response("UNAUTHORIZED", { status: 401 });
+    }
+
     const json = JSON.parse(body);
-    
-    // 決済データを正確に抽出
     const payload = {
       bridge_token: env.BRIDGEOS_WEBHOOK_TOKEN,
       event_id: json.event_id || json.id,
@@ -15,7 +29,7 @@ export default {
       rid: rid
     };
 
-    // SQUARE_QUEUE（画像 image_7ce425.png の設定名）へ確実に転送
+    // SQUARE_QUEUE（ダッシュボード上の名称）へ転送
     await env.SQUARE_QUEUE.send(payload);
     return new Response("SUCCESS", { status: 200 });
   },
@@ -31,3 +45,16 @@ export default {
     }
   }
 };
+
+async function verifySquareSignature(key, url, body, signature) {
+  if (!signature) return false;
+  const encoder = new TextEncoder();
+  const hmacKey = await crypto.subtle.importKey(
+    "raw", encoder.encode(key),
+    { name: "HMAC", hash: "SHA-256" },
+    false, ["sign"]
+  );
+  const signatureBin = await crypto.subtle.sign("HMAC", hmacKey, encoder.encode(url + body));
+  const expected = btoa(String.fromCharCode(...new Uint8Array(signatureBin)));
+  return expected === signature;
+}
