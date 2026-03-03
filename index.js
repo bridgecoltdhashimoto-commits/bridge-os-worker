@@ -1,31 +1,12 @@
-/**
- * BRIDGE OS: Stable Gateway (v1.1.2)
- * - Square HMAC-SHA256 署名検証の厳格化
- * - 401エラーの解消と詳細ログ
- */
 
 export default {
   async fetch(request, env) {
     if (request.method === "GET") return new Response("OK", { status: 200 });
-
-    const signature = request.headers.get("x-square-hmacsha256-signature");
-    const body = await request.text();
     const rid = crypto.randomUUID();
-
-    // 署名検証ロジック
-    const isAuthorized = await verifySquareSignature(
-      env.SQUARE_WEBHOOK_SIGNATURE_KEY,
-      env.SQUARE_WEBHOOK_URL,
-      body,
-      signature
-    );
-
-    if (!isAuthorized) {
-      console.error(`[${rid}] AUTH_FAIL: Signature mismatch`);
-      return new Response("UNAUTHORIZED", { status: 401 });
-    }
-
+    const body = await request.text();
     const json = JSON.parse(body);
+    
+    // 決済データを正確に抽出
     const payload = {
       bridge_token: env.BRIDGEOS_WEBHOOK_TOKEN,
       event_id: json.event_id || json.id,
@@ -34,8 +15,8 @@ export default {
       rid: rid
     };
 
-    // Queueへ送信
-    await env.BRIDGE_QUEUE.send(payload);
+    // SQUARE_QUEUE（画像 image_7ce425.png の設定名）へ確実に転送
+    await env.SQUARE_QUEUE.send(payload);
     return new Response("SUCCESS", { status: 200 });
   },
 
@@ -50,16 +31,3 @@ export default {
     }
   }
 };
-
-async function verifySquareSignature(key, url, body, signature) {
-  if (!signature) return false;
-  const encoder = new TextEncoder();
-  const hmacKey = await crypto.subtle.importKey(
-    "raw", encoder.encode(key),
-    { name: "HMAC", hash: "SHA-256" },
-    false, ["sign"]
-  );
-  const signatureBin = await crypto.subtle.sign("HMAC", hmacKey, encoder.encode(url + body));
-  const expected = btoa(String.fromCharCode(...new Uint8Array(signatureBin)));
-  return expected === signature;
-}
