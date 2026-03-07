@@ -1,4 +1,5 @@
-name = "bridge-os-worker"
+# wrangler.toml
+name = 'steep-dawn-8133'
 main = "src/index.js"
 compatibility_date = "2024-03-07"
 
