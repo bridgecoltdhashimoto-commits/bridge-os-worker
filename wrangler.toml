@@ -9,3 +9,6 @@ class_name = "DedupeObject"
 [[migrations]]
 tag = "v1"
 new_classes = ["DedupeObject"]
+[[durable_objects.bindings]]
+name = "DEDUPE"
+class_name = "DedupeObject"
