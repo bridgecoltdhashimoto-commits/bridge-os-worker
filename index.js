@@ -4,8 +4,3 @@ export default {
     return await fetch(new Request(gasUrl, request), { redirect: "follow" });
   }
 };
-
-export class DedupeObject {
-  constructor(state) { this.state = state; }
-  async fetch() { return new Response("OK"); }
-}
