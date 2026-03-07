@@ -1,3 +1,11 @@
-name = "bridge-os-worker"
+name = "steep-dawn-8133"
 main = "index.js"
 compatibility_date = "2024-03-07"
+
+[[durable_objects.bindings]]
+name = "DEDUPE"
+class_name = "DedupeObject"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["DedupeObject"]
