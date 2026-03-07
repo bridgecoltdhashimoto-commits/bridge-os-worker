@@ -1,31 +1,3 @@
-name = "steep-dawn-8133"
-main = "index.js"
-compatibility_date = "2026-01-12"
-account_id = "12b01b98b41db60a8ce31403cf544708"
-
 [[durable_objects.bindings]]
-name = "DEDUPE_OBJ"
+name = "DEDUPE"
 class_name = "DedupeObject"
-
-[[migrations]]
-tag = "v1"
-new_classes = ["DedupeObject"]
-
-[[kv_namespaces]]
-binding = "BRIDGEOS_KV"
-id = "1df4b5a1f61a42a9abe3eec37a30f108"
-preview_id = "f3c7a787dc694c32bc343df681c65716"
-
-[[queues.producers]]
-binding = "SQUARE_QUEUE"
-queue = "square-queue"
-
-[[queues.consumers]]
-queue = "square-queue"
-max_batch_size = 10
-max_batch_timeout = 10
-
-[vars]
-GAS_URL = "https://script.google.com/macros/s/AKfycbyvrvT1wHGYi7E7snBNsxEcSX5MHmQO31ZYugKDNe4TSo2M178m1zIztkbvMOL8NO48/exec"
-WEBHOOK_URL = "https://steep-dawn-8133.bridge-co-ltd-hashimoto.workers.dev/"
-# trigger build
