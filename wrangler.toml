@@ -1,15 +1,11 @@
-# wrangler.toml
-name = 'steep-dawn-8133'
-main = "index.js"
+name = "bridge-os-worker"
+main = "src/index.js"
 compatibility_date = "2024-03-07"
 
 [[durable_objects.bindings]]
-name = "DEDUPE_OBJ"
+name = "DEDUPE"
 class_name = "DedupeObject"
 
 [[migrations]]
 tag = "v1"
 new_classes = ["DedupeObject"]
-[[durable_objects.bindings]]
-name = "DEDUPE_OBJ"
-class_name = "DedupeObject"
