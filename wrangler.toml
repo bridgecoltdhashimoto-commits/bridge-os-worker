@@ -1,6 +1,6 @@
 # wrangler.toml
 name = 'steep-dawn-8133'
-main = "src/index.js"
+main = "index.js"
 compatibility_date = "2024-03-07"
 
 [[durable_objects.bindings]]
