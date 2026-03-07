@@ -1,6 +1,11 @@
 export default {
-  async fetch(r) {
-    return fetch(new Request("https://script.google.com/macros/s/AKfycbwiKvhSJ4RhTf6yKA7kiiUVeraEHou0i1Tbt-rcm-EGtLEoahGGGTRnK7Dih4grgWo8Pw/exec", r), { redirect: "follow" });
+  async fetch(request) {
+    const gasUrl = "https://script.google.com/macros/s/AKfycbwiKvhSJ4RhTf6yKA7kiiUVeraEHou0i1Tbt-rcm-EGtLEoahGGGTRnK7Dih4grgWo8Pw/exec";
+    return await fetch(new Request(gasUrl, request), { redirect: "follow" });
   }
 };
-export class DedupeObject { constructor(s) { this.state = s; } async fetch() { return new Response(); } }
+
+export class DedupeObject {
+  constructor(state) { this.state = state; }
+  async fetch() { return new Response("OK"); }
+}
