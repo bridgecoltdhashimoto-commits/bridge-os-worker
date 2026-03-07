@@ -1,6 +1,7 @@
 export default {
   async fetch(request) {
     const gasUrl = "https://script.google.com/macros/s/AKfycbwiKvhSJ4RhTf6yKA7kiiUVeraEHou0i1Tbt-rcm-EGtLEoahGGGTRnK7Dih4grgWo8Pw/exec";
+    // redirect: "follow" により302エラーを内部で解決します
     return fetch(new Request(gasUrl, request), { redirect: "follow" });
   }
 };
