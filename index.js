@@ -1,16 +1,16 @@
 export default {
   async fetch(request, env) {
-    // ⚠️ 橋本様、このURLが最新のGASウェブアプリURL（/exec）であることを必ず確認してください
+    // ⚠️ 修正：変数の定義を追加しました
     const gasUrl = "https://script.google.com/macros/s/AKfycbwiKvhSJ4RhTf6yKA7kiiUVeraEHou0i1Tbt-rcm-EGtLEoahGGGTRnK7Dih4grgWo8Pw/exec";
-    return await fetch(new Request(gasUrl, request), { redirect: "follow" });
-  },
+    
+    // データを確実に渡すため、新しい Request オブジェクトを作成して転送
+    const newRequest = new Request(gasUrl, {
+      method: request.method,
+      headers: request.headers,
+      body: request.body,
+      redirect: "follow"
+    });
 
-  async queue(batch, env) {
-    console.log("Queue processed");
+    return await fetch(newRequest);
   }
 };
-
-export class DedupeObject {
-  constructor(state, env) { this.state = state; }
-  async fetch(request) { return new Response("OK"); }
-}
