@@ -1,65 +1,69 @@
 /**
  * BRIDGE OS: Autonomous Core
- * Gemini (Draft) -> OpenAI (Review) -> Auto-Provisioning
+ * Gemini (Drafting) -> OpenAI (Optimization)
  */
 
-// 【重要】最初にこの関数を「実行」してください
+// 【重要】スプレッドシートがない状態で、まず一度だけこの関数を「実行」してください
 function INITIALIZE_BRIDGE_OS() {
-  // 1. 新しいスプレッドシートを生成
+  // 1. 新しいスプレッドシートを作成
   const ss = SpreadsheetApp.create("BRIDGE_OS_CONTROL");
   const ssId = ss.getId();
   
-  // 2. 作成したIDをシステム（スクリプトプロパティ）に永久保存
+  // 2. 作成したIDをスクリプトプロパティに保存（これでシステムが迷子になりません）
   PropertiesService.getScriptProperties().setProperty('SS_ID', ssId);
   
-  // 3. 必要な管理シートを自動作成
+  // 3. 必要な管理シート（Vault）を自動作成
   const vault = ss.insertSheet("System_Interaction_Vault");
   vault.appendRow(["Timestamp", "Status", "Content"]);
   vault.setFrozenRows(1);
   
-  const queue = ss.insertSheet("System_Fulfillment_Queue");
-  
-  // 初期シート（シート1）を削除してクリーンアップ
+  // 初期シート（シート1）を削除
   const defaultSheet = ss.getSheetByName("シート1");
   if (defaultSheet) ss.deleteSheet(defaultSheet);
   
   const url = ss.getUrl();
-  console.log("スプレッドシートを生成・紐付け完了: " + url);
-  return "成功！以下のURLを開いてください: " + url;
+  console.log("BRIDGE OS スプレッドシート生成完了: " + url);
+  return "生成成功: " + url;
 }
 
-// システムが常に正しいスプレッドシートを捕捉するための関数
+// 常に紐付けられたスプレッドシートを取得する内部関数
 function getSystemSpreadsheet() {
   const id = PropertiesService.getScriptProperties().getProperty('SS_ID');
-  if (id) return SpreadsheetApp.openById(id);
+  if (id) {
+    try {
+      return SpreadsheetApp.openById(id);
+    } catch (e) {
+      console.error("IDによるシート取得失敗: " + e.message);
+    }
+  }
   return SpreadsheetApp.getActiveSpreadsheet();
 }
 
 function doPost(e) {
   const ss = getSystemSpreadsheet();
-  if (!ss) return ContentService.createTextOutput("ERROR: Spreadsheet not linked.");
-  
-  const vault = ss.getSheetByName("System_Interaction_Vault");
+  const vault = ss.getSheetByName("System_Interaction_Vault") || ss.insertSheet("System_Interaction_Vault");
   
   try {
     const rawData = e.postData.contents;
     
-    // 1. Gemini Draft
-    const geminiDraft = callGemini(`Squareデータ解析ドラフト: ${rawData}`);
+    // 1. Geminiによる戦略立案（ドラフト）
+    const geminiDraft = callGemini(`Squareデータ解析: ${rawData}`);
     
-    // 2. OpenAI Finalize
-    const finalProduct = callOpenAI(`BRIDGE OS基準で最終化せよ: ${geminiDraft}`);
+    // 2. OpenAIによる論理検閲と最適化
+    const finalProduct = callOpenAI(`BRIDGE OS基準で最適化せよ: ${geminiDraft}`);
     
+    // 3. 結果の記録
     vault.appendRow([new Date(), "SUCCESS", finalProduct]);
-    return ContentService.createTextOutput(JSON.stringify({status: "COMPLETED"}));
+    
+    return ContentService.createTextOutput(JSON.stringify({status: "COMPLETED", data: finalProduct}));
     
   } catch (err) {
-    if (vault) vault.appendRow([new Date(), "ERROR", err.message]);
-    return ContentService.createTextOutput("ERROR: " + err.message);
+    if (vault) vault.appendRow([new Date(), "ERROR", err.message]); //
+    return ContentService.createTextOutput("SYSTEM_ERROR: " + err.message);
   }
 }
 
-// AI連携用関数群
+// AI連携用関数（既存のロジックを継承）
 function callGemini(prompt) {
   const key = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${key}`;
