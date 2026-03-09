@@ -9,20 +9,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      # Cloudflare反映
+      # ① Cloudflare反映
       - name: Deploy to Cloudflare
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
-      # GAS反映 (Clasp)
+      # ② GAS反映 (認証ファイルを物理的に作成してログイン)
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
       - name: Install Clasp
         run: npm install -g @google/clasp
+      - name: Create clasp auth file
+        run: echo '${{ secrets.CLASPRC_JSON }}' > ~/.clasprc.json
       - name: Deploy to GAS
         run: clasp push -f
-        env:
-          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
