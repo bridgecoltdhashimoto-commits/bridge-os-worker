@@ -4,7 +4,7 @@
  */
 function doPost(e) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const vault = ss.getSheetByName("Interaction_Vault") || ss.insertSheet("Interaction_Vault");
+  const vault = ss.getSheetByName("System_Interaction_Vault") || ss.insertSheet("System_Interaction_Vault");
   
   try {
     const rawData = e.postData.contents;
@@ -15,7 +15,7 @@ function doPost(e) {
     // 2. OpenAIによる数学的整合性の検閲と最終化
     const finalProduct = callOpenAI(`以下のドラフトをBRIDGE OSの基準で最適化せよ: ${geminiDraft}`);
     
-    // 3. 結果の記録（Interaction Vault）
+    // 3. 結果の記録（Vault）
     vault.appendRow([new Date(), "SUCCESS", finalProduct]);
     
     return ContentService.createTextOutput(JSON.stringify({status: "COMPLETED", data: finalProduct}));
