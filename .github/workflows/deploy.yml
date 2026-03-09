@@ -9,13 +9,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      # ① Cloudflare反映
-      - name: Deploy to Cloudflare
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-
-      # ② GAS反映 (認証ファイルを物理的に作成してログイン)
+      # GASへの反映だけに絞り、競合を排除します
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
