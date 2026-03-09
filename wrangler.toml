@@ -1,11 +1,17 @@
-name = "steep-dawn-8133"
-main = "index.js"
-compatibility_date = "2024-03-07"
-
-[[durable_objects.bindings]]
-name = "DEDUPE"
-class_name = "DedupeObject"
-
-[[migrations]]
-tag = "v1"
-new_classes = ["DedupeObject"]
+{
+  "observability": {
+    "enabled": false,
+    "head_sampling_rate": 1,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "persist": true,
+      "invocation_logs": true
+    },
+    "traces": {
+      "enabled": false,
+      "persist": true,
+      "head_sampling_rate": 1
+    }
+  }
+}
