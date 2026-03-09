@@ -1,17 +1,19 @@
-{
-  "observability": {
-    "enabled": false,
-    "head_sampling_rate": 1,
-    "logs": {
-      "enabled": true,
-      "head_sampling_rate": 1,
-      "persist": true,
-      "invocation_logs": true
-    },
-    "traces": {
-      "enabled": false,
-      "persist": true,
-      "head_sampling_rate": 1
-    }
-  }
-}
+name = "steep-dawn-8133"
+main = "index.js"
+compatibility_date = "2024-03-07"
+
+[[durable_objects.bindings]]
+name = "DEDUPE_OBJ"
+class_name = "DedupeObject"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["DedupeObject"]
+
+[[queues.producers]]
+queue = "square-queue"
+binding = "SQUARE_QUEUE"
+
+[[kv_namespaces]]
+binding = "BRIDGEOS_KV"
+id = "1df4b5a1f61a42a9abe3eec37a30f108"
