@@ -9,11 +9,3 @@ class_name = "DedupeObject"
 [[migrations]]
 tag = "v1"
 new_classes = ["DedupeObject"]
-
-[[queues.producers]]
-queue = "square-queue"
-binding = "SQUARE_QUEUE"
-
-[[kv_namespaces]]
-binding = "BRIDGEOS_KV"
-id = "1df4b5a1f61a42a9abe3eec37a30f108"
