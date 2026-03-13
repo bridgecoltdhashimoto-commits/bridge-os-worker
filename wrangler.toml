@@ -1,3 +1,8 @@
 name = "bridge-os-worker"
 main = "index.js"
 compatibility_date = "2024-03-07"
+
+# DedupeObject を完全に削除するための命令
+[[migrations]]
+tag = "v2"
+deleted_classes = ["DedupeObject"]
