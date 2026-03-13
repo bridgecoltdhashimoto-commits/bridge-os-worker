@@ -1,12 +1,12 @@
 export default {
-  async fetch(request, env) {
-    const gasUrl = "https://script.google.com/macros/s/AKfycbwiKvhSJ4RhTf6yKA7kiiUVeraEHou0i1Tbt-rcm-EGtLEoahGGGTRnK7Dih4grgWo8Pw/exec";
-    return await fetch(new Request(gasUrl, request), { redirect: "follow" });
+  async fetch(request, env, ctx) {
+    const gasUrl = "https://script.google.com/macros/s/AKfycbwYJmTS3nJtAZsTki9_Tu0wzTaQcPNBzlse_PT3uxM_wrXtfUIbPeo9EHCaqg_HdVW_/exec"; 
+    if (request.method === "POST") {
+      const body = await request.text();
+      // ctx.waitUntilを使用して、Squareには即座に応答を返しつつ、GASへの転送を裏側で完結させます
+      ctx.waitUntil(fetch(gasUrl, { method: "POST", body: body, headers: request.headers }));
+      return new Response("ACCEPTED", { status: 200 });
+    }
+    return new Response("BRIDGE OS ACTIVE");
   }
-};
-
-// ビルド成功に必須：Durable Object
-export class DedupeObject {
-  constructor(state, env) { this.state = state; }
-  async fetch(request) { return new Response("OK"); }
 }
