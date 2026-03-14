@@ -1,6 +1,6 @@
 export default {
   async fetch(request, env, ctx) {
-    const gasUrl = "https://script.google.com/macros/s/AKfycbwYJmTS3nJtAZsTki9_Tu0wzTaQcPNBzlse_PT3uxM_wrXtfUibPeo9EHCaqg_HdVW_/exec";
+    const gasUrl = "https://script.google.com/macros/s/AKfycbwYJmTS3nJtAZsTki9_Tu0wzTaQcPNBzlse_PT3uxM_wrXtfUIbPeo9EHCaqg_HdVW_/exec";
 
     if (request.method === "POST") {
       const body = await request.text();
