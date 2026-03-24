@@ -9,17 +9,14 @@ jobs:
         with:
           node-version: 20
       - run: npm install -g @google/clasp
-      - env:
-          CLASPRC: ${{ secrets.CLASPRC_JSON }}
-          ID: ${{ secrets.SCRIPT_ID }}
-        run: |
-          # 1. 認証情報の改行コードを正常化
-          echo "$CLASPRC" | tr -d '\r' > ~/.clasprc.json
+      - run: |
+          # 1. 鍵を流し込む
+          cat << 'EOF' > ~/.clasprc.json
+          ${{ secrets.CLASPRC_JSON }}
+          EOF
           
-          # 2. IDから空白・改行を完全に除去（これがエラーの主因です）
-          CLEAN_ID=$(echo "$ID" | tr -d '[:space:]')
-          echo "{\"scriptId\":\"$CLEAN_ID\",\"rootDir\":\"./\"}" > .clasp.json
+          # 2. IDを物理的に固定（Secretを使わないことで、読み込みミスを100%防ぎます）
+          echo '{"scriptId":"1_5QLn1m22GmUOfKRWB54DKXqQZT2nduQjoUPUDnXIUQB0kVBEh-_GHZ","rootDir":"./"}' > .clasp.json
           
-          # 3. 邪魔な設定ファイルを無視して強制プッシュ
-          rm -f .claspignore
+          # 3. 送信
           clasp push -f
