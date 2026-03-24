@@ -20,14 +20,15 @@ jobs:
         run: npm install -g @google/clasp
 
       - name: Create clasp auth file
-        # 認証ファイルを生成
-        run: echo "${{ secrets.CLASPRC_JSON }}" > ~/.clasprc.json
-
-      - name: Force create .clasp.json from Secret
-        # リポジトリのファイルは無視して、Secretから設定ファイルを強制生成します
+        # 引用符の競合を避けるため、printfを使用します
         run: |
-          echo '{"scriptId":"${{ secrets.SCRIPT_ID }}","rootDir":"./"}' > .clasp.json
+          printf '%s' '${{ secrets.CLASPRC_JSON }}' > ~/.clasprc.json
+
+      - name: Force create .clasp.json
+        # IDの前後にあるかもしれない見えない空白を完全に無視する書き方です
+        run: |
+          echo "{\"scriptId\":\"${{ secrets.SCRIPT_ID }}\",\"rootDir\":\"./\"}" > .clasp.json
 
       - name: Deploy to GAS
-        # 強制的にプッシュを実行
+        # 全ての競合を無視して強制プッシュ
         run: clasp push -f
