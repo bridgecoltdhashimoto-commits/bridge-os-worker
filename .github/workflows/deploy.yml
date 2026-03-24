@@ -1,4 +1,5 @@
 name: BRIDGE OS AUTO-DEPLOY
+
 on:
   push:
     branches: [ main ]
@@ -7,16 +8,26 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      
-      # GASへの反映だけに絞り、競合を排除します
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: setup-node@v4
         with:
           node-version: '20'
+
       - name: Install Clasp
         run: npm install -g @google/clasp
+
       - name: Create clasp auth file
-        run: echo '${{ secrets.CLASPRC_JSON }}' > ~/.clasprc.json
+        # 認証ファイルを生成
+        run: echo "${{ secrets.CLASPRC_JSON }}" > ~/.clasprc.json
+
+      - name: Force create .clasp.json from Secret
+        # リポジトリのファイルは無視して、Secretから設定ファイルを強制生成します
+        run: |
+          echo '{"scriptId":"${{ secrets.SCRIPT_ID }}","rootDir":"./"}' > .clasp.json
+
       - name: Deploy to GAS
+        # 強制的にプッシュを実行
         run: clasp push -f
