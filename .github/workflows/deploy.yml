@@ -1,34 +1,25 @@
 name: BRIDGE OS AUTO-DEPLOY
-
 on:
   push:
     branches: [ main ]
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
       - name: Setup Node.js
-        uses: setup-node@v4
+        uses: actions/setup-node@v4
         with:
           node-version: '20'
-
       - name: Install Clasp
         run: npm install -g @google/clasp
-
-      - name: Create clasp auth file
-        # 引用符の競合を避けるため、printfを使用します
+      - name: Create files from Secrets
+        env:
+          CLASPRC: ${{ secrets.CLASPRC_JSON }}
+          SCRIPT_ID: ${{ secrets.SCRIPT_ID }}
         run: |
-          printf '%s' '${{ secrets.CLASPRC_JSON }}' > ~/.clasprc.json
-
-      - name: Force create .clasp.json
-        # IDの前後にあるかもしれない見えない空白を完全に無視する書き方です
-        run: |
-          echo "{\"scriptId\":\"${{ secrets.SCRIPT_ID }}\",\"rootDir\":\"./\"}" > .clasp.json
-
+          echo "$CLASPRC" > ~/.clasprc.json
+          echo "{\"scriptId\":\"$SCRIPT_ID\",\"rootDir\":\"./\"}" > .clasp.json
       - name: Deploy to GAS
-        # 全ての競合を無視して強制プッシュ
         run: clasp push -f
