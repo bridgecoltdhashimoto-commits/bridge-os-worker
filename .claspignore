@@ -1,0 +1,12 @@
+**/**
+!コード.js
+!appsscript.json
+!core.js
+!dedupe.js
+!main.gs
+wrangler.toml
+index.js
+node_modules/
+package.json
+package-lock.json
+.github/
