@@ -1,49 +1,70 @@
 /**
- * BRIDGE OS: Autonomous Core
+ * Stage 1: Square -> Worker -> GAS -> Sheets -> Gmail
  */
-function INITIALIZE_BRIDGE_OS() {
-  const ss = SpreadsheetApp.create("BRIDGE_OS_CONTROL");
-  PropertiesService.getScriptProperties().setProperty('SS_ID', ss.getId());
-  const vault = ss.insertSheet("Interaction_Vault");
-  vault.appendRow(["Timestamp", "Status", "Content"]);
-  return "生成成功: " + ss.getUrl();
-}
-
-function getSystemSpreadsheet() {
-  const id = PropertiesService.getScriptProperties().getProperty('SS_ID');
-  return id ? SpreadsheetApp.openById(id) : SpreadsheetApp.getActiveSpreadsheet();
-}
-
 function doPost(e) {
-  const ss = getSystemSpreadsheet();
-  const vault = ss.getSheetByName("Interaction_Vault") || ss.insertSheet("Interaction_Vault");
+  const props = PropertiesService.getScriptProperties();
+  const expectedToken = props.getProperty('WEBHOOK_TOKEN');
+  const adminEmail = props.getProperty('ADMIN_EMAIL');
+  const sheet = getOrCreateSheet_();
+
   try {
-    const rawData = e.postData.contents;
-    const geminiDraft = callGemini(`Squareデータ解析: ${rawData}`);
-    const finalProduct = callOpenAI(`BRIDGE OS基準で最終化せよ: ${geminiDraft}`);
-    vault.appendRow([new Date(), "SUCCESS", finalProduct]);
-    return ContentService.createTextOutput(JSON.stringify({status: "COMPLETED"}));
+    const receivedToken = (e && e.parameter && e.parameter.token) ? e.parameter.token : '';
+    if (!expectedToken || receivedToken !== expectedToken) {
+      sheet.appendRow([new Date(), 'UNAUTHORIZED', '', '', '', 'invalid token']);
+      return jsonResponse_({ ok: false, reason: 'unauthorized' });
+    }
+
+    const rawData = (e && e.postData && e.postData.contents) ? e.postData.contents : '{}';
+    const payload = JSON.parse(rawData);
+
+    const eventId = payload.event_id || '';
+    const eventType = payload.type || '';
+    const payment = payload.data && payload.data.object && payload.data.object.payment ? payload.data.object.payment : {};
+    const amount = payment.amount_money && typeof payment.amount_money.amount !== 'undefined'
+      ? Number(payment.amount_money.amount)
+      : '';
+    const paymentId = payment.id || '';
+
+    sheet.appendRow([new Date(), 'RECEIVED', eventId, eventType, paymentId, amount]);
+
+    if (adminEmail) {
+      GmailApp.sendEmail(
+        adminEmail,
+        '【BRIDGE OS TEST】Square 100円決済テスト完了',
+        [
+          'Square 100円決済テストの疎通が完了しました。',
+          '',
+          `event_id: ${eventId}`,
+          `event_type: ${eventType}`,
+          `payment_id: ${paymentId}`,
+          `amount: ${amount}`,
+          `received_at: ${new Date().toISOString()}`,
+        ].join('\n')
+      );
+    }
+
+    return jsonResponse_({ ok: true, status: 'recorded' });
   } catch (err) {
-    if (vault) vault.appendRow([new Date(), "ERROR", err.message]);
-    return ContentService.createTextOutput("ERROR: " + err.message);
+    sheet.appendRow([new Date(), 'ERROR', '', '', '', String(err && err.message ? err.message : err)]);
+    return jsonResponse_({ ok: false, reason: String(err && err.message ? err.message : err) });
   }
 }
 
-function callGemini(prompt) {
-  const key = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${key}`;
-  const res = UrlFetchApp.fetch(url, {
-    method: "post", contentType: "application/json",
-    payload: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
-  });
-  return JSON.parse(res.getContentText()).candidates[0].content.parts[0].text;
+function getOrCreateSheet_() {
+  const props = PropertiesService.getScriptProperties();
+  const ssId = props.getProperty('SHEET_ID');
+  const ss = ssId ? SpreadsheetApp.openById(ssId) : SpreadsheetApp.getActiveSpreadsheet();
+  const name = 'Square_Logs';
+  const sheet = ss.getSheetByName(name) || ss.insertSheet(name);
+
+  if (sheet.getLastRow() === 0) {
+    sheet.appendRow(['Timestamp', 'Status', 'Event ID', 'Event Type', 'Payment ID', 'Amount']);
+  }
+  return sheet;
 }
 
-function callOpenAI(prompt) {
-  const key = PropertiesService.getScriptProperties().getProperty('OPENAI_API_KEY');
-  const res = UrlFetchApp.fetch("https://api.openai.com/v1/chat/completions", {
-    method: "post", headers: { Authorization: `Bearer ${key}` }, contentType: "application/json",
-    payload: JSON.stringify({ model: "gpt-4-turbo", messages: [{ role: "user", content: prompt }] })
-  });
-  return JSON.parse(res.getContentText()).choices[0].message.content;
+function jsonResponse_(obj) {
+  return ContentService
+    .createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
 }
