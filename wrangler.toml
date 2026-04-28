@@ -21,9 +21,3 @@ invocation_logs = true
 enabled = false
 persist = true
 head_sampling_rate = 1
-
-
-# Non-secret runtime vars
-[vars]
-# Set to your GAS Web App URL in each environment (example value only)
-GAS_WEBHOOK_URL = ""
