@@ -24,6 +24,19 @@ function doPost(e) {
       ? Number(payment.amount_money.amount)
       : '';
     const paymentId = payment.id || '';
+    const paymentStatus = payment.status || '';
+
+    if (eventType !== 'payment.updated') {
+      return jsonResponse_({ ok: true, status: 'ignored', reason: 'non_target_event' });
+    }
+
+    if (paymentStatus !== 'COMPLETED') {
+      return jsonResponse_({ ok: true, status: 'ignored', reason: 'non_completed_payment' });
+    }
+
+    if (paymentId && isPaymentIdAlreadyLogged_(sheet, paymentId)) {
+      return jsonResponse_({ ok: true, status: 'ignored', reason: 'duplicate_payment_id' });
+    }
 
     sheet.appendRow([new Date(), 'RECEIVED', eventId, eventType, paymentId, amount]);
 
@@ -61,6 +74,18 @@ function getOrCreateSheet_() {
     sheet.appendRow(['Timestamp', 'Status', 'Event ID', 'Event Type', 'Payment ID', 'Amount']);
   }
   return sheet;
+}
+
+function isPaymentIdAlreadyLogged_(sheet, paymentId) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow <= 1) {
+    return false;
+  }
+
+  const paymentIdValues = sheet.getRange(2, 5, lastRow - 1, 1).getValues();
+  return paymentIdValues.some(function (row) {
+    return row[0] === paymentId;
+  });
 }
 
 function jsonResponse_(obj) {
