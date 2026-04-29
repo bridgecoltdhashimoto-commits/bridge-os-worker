@@ -21,3 +21,6 @@ invocation_logs = true
 enabled = false
 persist = true
 head_sampling_rate = 1
+
+[vars]
+GAS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbykg3DTLB9hUO9NaHj9U38be_RAkOQRj7j75EU6vk3pNawX-c7kj-qSNIaIJgZqih12/exec"
