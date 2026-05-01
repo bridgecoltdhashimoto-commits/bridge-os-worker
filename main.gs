@@ -90,9 +90,31 @@ function ensureSystemSheets_(ss) {
 
 function getOrCreateSheetWithHeader_(ss, name, headers) {
   const sheet = ss.getSheetByName(name) || ss.insertSheet(name);
+
   if (sheet.getLastRow() === 0) {
     sheet.appendRow(headers);
+    return sheet;
   }
+
+  const lastColumn = sheet.getLastColumn();
+  const existingHeaders = lastColumn > 0
+    ? sheet.getRange(1, 1, 1, lastColumn).getValues()[0]
+    : [];
+
+  const existingHeaderSet = {};
+  existingHeaders.forEach(function (header) {
+    existingHeaderSet[String(header)] = true;
+  });
+
+  const missingHeaders = headers.filter(function (header) {
+    return !existingHeaderSet[String(header)];
+  });
+
+  if (missingHeaders.length > 0) {
+    const startCol = lastColumn + 1;
+    sheet.getRange(1, startCol, 1, missingHeaders.length).setValues([missingHeaders]);
+  }
+
   return sheet;
 }
 
