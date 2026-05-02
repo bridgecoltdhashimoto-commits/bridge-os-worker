@@ -30,15 +30,26 @@ jobs:
           test -n "$CLASPRC_JSON" || { echo "Missing secret: CLASPRC_JSON"; exit 1; }
           test -n "$GAS_SCRIPT_ID" || { echo "Missing secret: GAS_SCRIPT_ID"; exit 1; }
 
-          # 3. GASデプロイ専用の一時ディレクトリを作成（main.gsのみ配置）
+          # 3. GASデプロイ専用の一時ディレクトリを作成（main.gs + appsscript.jsonのみ配置）
           mkdir -p gas_deploy
           cp main.gs gas_deploy/main.gs
+          if [ -f appsscript.json ]; then
+            cp appsscript.json gas_deploy/appsscript.json
+          else
+            cat << 'EOF' > gas_deploy/appsscript.json
+            {
+              "timeZone": "Asia/Tokyo",
+              "exceptionLogging": "STACKDRIVER",
+              "runtimeVersion": "V8"
+            }
+            EOF
+          fi
 
           # 4. GAS Script IDをSecretから設定（gas_deploy配下）
           printf '{"scriptId":"%s","rootDir":"."}\n' "$GAS_SCRIPT_ID" > gas_deploy/.clasp.json
 
       - name: Force Deploy
         run: |
-          # 5. GASへはmain.gsのみをpush
+          # 5. GASへはmain.gs と appsscript.json のみをpush
           cd gas_deploy
           clasp push -f
