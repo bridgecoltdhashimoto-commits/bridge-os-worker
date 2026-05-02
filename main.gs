@@ -84,8 +84,8 @@ function ensureSystemSheets_(ss) {
     queue: getOrCreateSheetWithHeader_(ss, 'System_Fulfillment_Queue', ['received_at', 'status', 'payment_id', 'event_id', 'buyer_email', 'amount', 'currency', 'raw_json', 'tries', 'last_error', 'updated_at', 'delivery_url', 'done_at']),
     evidence: getOrCreateSheetWithHeader_(ss, 'System_Evidence_Vault', ['received_at', 'provider', 'event_id', 'payment_id', 'type', 'payload_hash', 'raw_json']),
     revenueAudit: getOrCreateSheetWithHeader_(ss, 'System_Revenue_Audit', ['received_at', 'payment_id', 'event_id', 'amount', 'currency', 'status', 'buyer_email']),
-    fulfillmentLog: getOrCreateSheetWithHeader_(ss, 'System_Fulfillment_Log', ['timestamp', 'level', 'payment_id', 'event_id', 'message']),
-    fulfillmentDLQ: getOrCreateSheetWithHeader_(ss, 'System_Fulfillment_DLQ', ['timestamp', 'payment_id', 'event_id', 'error_type', 'error_message', 'raw_json']),
+    fulfillmentLog: getOrCreateSheetWithHeader_(ss, 'System_Fulfillment_Log', ['sent_at', 'payment_id', 'event_id', 'buyer_email', 'delivery_url', 'mail_subject', 'mail_body_hash', 'status', 'created_at']),
+    fulfillmentDLQ: getOrCreateSheetWithHeader_(ss, 'System_Fulfillment_DLQ', ['event_id', 'payment_id', 'buyer_email', 'error', 'raw_row', 'timestamp']),
   };
 }
 
@@ -186,68 +186,98 @@ function STAGE3_manualTest() {
 }
 
 function processFulfillmentQueue() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) {
+    return { ok: false, reason: 'lock_not_acquired' };
+  }
+
   const ss = getSpreadsheet_();
   const sheets = ensureSystemSheets_(ss);
   const queueSheet = sheets.queue;
   const logSheet = sheets.fulfillmentLog;
   const dlqSheet = sheets.fulfillmentDLQ;
-  const values = queueSheet.getDataRange().getValues();
-
-  if (values.length <= 1) {
-    appendFulfillmentLog_(logSheet, 'INFO', '', '', 'Stage3 queue processing skipped: no queue rows');
-    return { ok: true, processed: 0, failed: 0, skipped: 0 };
-  }
-
-  const headers = values[0];
-  const col = getHeaderIndexMap_(headers);
-  let processed = 0;
-  let failed = 0;
-  let skipped = 0;
-
-  for (var i = 1; i < values.length; i++) {
-    const row = values[i];
-    const sheetRow = i + 1;
-    const status = String(row[col.status] || '');
-    const paymentId = String(row[col.payment_id] || '');
-    const eventId = String(row[col.event_id] || '');
-    const rawJson = String(row[col.raw_json] || '');
-
-    if (status !== 'ENQUEUED') {
-      skipped++;
-      continue;
+  try {
+    const values = queueSheet.getDataRange().getValues();
+    if (values.length <= 1) {
+      return { ok: true, processed: 0, failed: 0, skipped: 0 };
     }
 
-    try {
-      const startedAt = new Date().toISOString();
-      setCellByHeader_(queueSheet, sheetRow, col, 'status', 'PROCESSING');
-      setCellByHeader_(queueSheet, sheetRow, col, 'updated_at', startedAt);
-      appendFulfillmentLog_(logSheet, 'INFO', paymentId, eventId, 'Stage3 fulfillment started');
+    const headers = values[0];
+    const col = getHeaderIndexMap_(headers);
+    let processed = 0;
+    let failed = 0;
+    let skipped = 0;
 
-      const doneAt = new Date().toISOString();
-      setCellByHeader_(queueSheet, sheetRow, col, 'delivery_url', 'STAGE3_PLACEHOLDER_DELIVERY');
-      setCellByHeader_(queueSheet, sheetRow, col, 'done_at', doneAt);
-      setCellByHeader_(queueSheet, sheetRow, col, 'updated_at', doneAt);
-      setCellByHeader_(queueSheet, sheetRow, col, 'status', 'DONE');
+    for (var i = 1; i < values.length; i++) {
+      const row = values[i];
+      const sheetRow = i + 1;
+      const status = String(row[col.status] || '');
+      const paymentId = String(row[col.payment_id] || '');
+      const eventId = String(row[col.event_id] || '');
+      const buyerEmail = String(row[col.buyer_email] || '');
+      const rawJson = String(row[col.raw_json] || '');
 
-      appendFulfillmentLog_(logSheet, 'INFO', paymentId, eventId, 'Stage3 fulfillment completed with placeholder delivery');
-      processed++;
-    } catch (err) {
-      failed++;
-      const message = String(err && err.message ? err.message : err);
-      const currentTries = Number(row[col.tries] || 0);
-      const updatedAt = new Date().toISOString();
+      if (status !== 'ENQUEUED') {
+        skipped++;
+        continue;
+      }
 
-      safeSetCellByHeader_(queueSheet, sheetRow, col, 'tries', currentTries + 1);
-      safeSetCellByHeader_(queueSheet, sheetRow, col, 'last_error', message);
-      safeSetCellByHeader_(queueSheet, sheetRow, col, 'updated_at', updatedAt);
-      safeSetCellByHeader_(queueSheet, sheetRow, col, 'status', 'ERROR');
+      try {
+        const startedAt = new Date().toISOString();
+        setCellByHeader_(queueSheet, sheetRow, col, 'status', 'PROCESSING');
+        setCellByHeader_(queueSheet, sheetRow, col, 'updated_at', startedAt);
 
-      appendFulfillmentLog_(logSheet, 'ERROR', paymentId, eventId, message);
-      dlqSheet.appendRow([updatedAt, paymentId, eventId, 'FULFILLMENT_ERROR', message, rawJson]);
+        const delivery = getDeliveryConfig_();
+        if (!buyerEmail) {
+          throw new Error('buyer_email is empty');
+        }
+
+        const mail = buildDeliveryMail_(delivery.shopName, delivery.deliveryUrl, delivery.supportFormUrl);
+        GmailApp.sendEmail(buyerEmail, mail.subject, mail.body);
+
+        const doneAt = new Date().toISOString();
+        setCellByHeader_(queueSheet, sheetRow, col, 'delivery_url', delivery.deliveryUrl);
+        setCellByHeader_(queueSheet, sheetRow, col, 'done_at', doneAt);
+        setCellByHeader_(queueSheet, sheetRow, col, 'updated_at', doneAt);
+        setCellByHeader_(queueSheet, sheetRow, col, 'status', 'DONE');
+        appendFulfillmentLog_(logSheet, {
+          sent_at: doneAt,
+          payment_id: paymentId,
+          event_id: eventId,
+          buyer_email: buyerEmail,
+          delivery_url: delivery.deliveryUrl,
+          mail_subject: mail.subject,
+          mail_body_hash: toSha256Hex_(mail.body),
+          status: 'SENT',
+          created_at: doneAt,
+        });
+        processed++;
+      } catch (err) {
+        failed++;
+        const message = String(err && err.message ? err.message : err);
+        const currentTries = Number(row[col.tries] || 0);
+        const updatedAt = new Date().toISOString();
+
+        safeSetCellByHeader_(queueSheet, sheetRow, col, 'tries', currentTries + 1);
+        safeSetCellByHeader_(queueSheet, sheetRow, col, 'last_error', message);
+        safeSetCellByHeader_(queueSheet, sheetRow, col, 'updated_at', updatedAt);
+        safeSetCellByHeader_(queueSheet, sheetRow, col, 'status', 'ERROR');
+
+        appendFulfillmentDlq_(dlqSheet, {
+          event_id: eventId,
+          payment_id: paymentId,
+          buyer_email: buyerEmail,
+          error: message,
+          raw_row: JSON.stringify(row),
+          timestamp: updatedAt,
+        });
+      }
     }
-  }
 
-  return { ok: true, processed: processed, failed: failed, skipped: skipped };
+    return { ok: true, processed: processed, failed: failed, skipped: skipped };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function getHeaderIndexMap_(headers) {
@@ -272,8 +302,58 @@ function safeSetCellByHeader_(sheet, rowNumber, col, header, value) {
   sheet.getRange(rowNumber, col[header] + 1).setValue(value);
 }
 
-function appendFulfillmentLog_(logSheet, level, paymentId, eventId, message) {
-  logSheet.appendRow([new Date().toISOString(), level, paymentId, eventId, message]);
+function appendFulfillmentLog_(logSheet, row) {
+  appendRowByHeader_(logSheet, row);
+}
+
+function appendFulfillmentDlq_(dlqSheet, row) {
+  appendRowByHeader_(dlqSheet, row);
+}
+
+function appendRowByHeader_(sheet, rowObj) {
+  const lastColumn = sheet.getLastColumn();
+  const headers = lastColumn > 0 ? sheet.getRange(1, 1, 1, lastColumn).getValues()[0] : [];
+  const row = headers.map(function (header) {
+    const key = String(header);
+    return Object.prototype.hasOwnProperty.call(rowObj, key) ? rowObj[key] : '';
+  });
+  sheet.appendRow(row);
+}
+
+function getDeliveryConfig_() {
+  const props = PropertiesService.getScriptProperties();
+  const shopName = String(props.getProperty('SHOP_NAME') || 'BRIDGE OS');
+  const deliveryUrl = String(props.getProperty('DELIVERY_URL') || '');
+  const supportFormUrl = String(props.getProperty('SUPPORT_FORM_URL') || '');
+  const adminEmail = String(props.getProperty('ADMIN_EMAIL') || '');
+  if (!deliveryUrl) {
+    throw new Error('DELIVERY_URL is required');
+  }
+  return { shopName: shopName, deliveryUrl: deliveryUrl, supportFormUrl: supportFormUrl, adminEmail: adminEmail };
+}
+
+function buildDeliveryMail_(shopName, deliveryUrl, supportFormUrl) {
+  const subject = '【' + shopName + '】ご購入コンテンツのご案内';
+  const lines = [
+    'このたびはご購入ありがとうございます。',
+    '',
+    '以下よりコンテンツをご利用ください。',
+    deliveryUrl,
+    '',
+    '※個別相談・法的判断には対応しておりません。',
+  ];
+  if (supportFormUrl) {
+    lines.push('お問い合わせフォーム: ' + supportFormUrl);
+  }
+  return { subject: subject, body: lines.join('\n') };
+}
+
+function toSha256Hex_(text) {
+  const hashBytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(text), Utilities.Charset.UTF_8);
+  return hashBytes.map(function (b) {
+    const v = b < 0 ? b + 256 : b;
+    return ('0' + v.toString(16)).slice(-2);
+  }).join('');
 }
 
 function jsonResponse_(obj) {

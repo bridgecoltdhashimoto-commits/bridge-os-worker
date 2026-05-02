@@ -18,17 +18,37 @@ jobs:
 
       - name: Create Auth and Config Files
         env:
-          CLASPRC: ${{ secrets.CLASPRC_JSON }}
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          GAS_SCRIPT_ID: ${{ secrets.GAS_SCRIPT_ID }}
         run: |
           # 1. 鍵（JSON）を一切の加工なしで流し込む
           cat << 'EOF' > ~/.clasprc.json
           ${{ secrets.CLASPRC_JSON }}
           EOF
-          
-          # 2. IDを物理的に書き込む（Secretを介さないことで、読み取りミスを0にします）
-          echo '{"scriptId":"1_5QLn1m22GmUOfKRWB54DKXqQZT2nduQjoUPUDnXIUQB0kVBEh-_GHZ","rootDir":"."}' > .clasp.json
+
+          # 2. 必須Secretの存在確認（値は表示しない）
+          test -n "$CLASPRC_JSON" || { echo "Missing secret: CLASPRC_JSON"; exit 1; }
+          test -n "$GAS_SCRIPT_ID" || { echo "Missing secret: GAS_SCRIPT_ID"; exit 1; }
+
+          # 3. GASデプロイ専用の一時ディレクトリを作成（main.gs + appsscript.jsonのみ配置）
+          mkdir -p gas_deploy
+          cp main.gs gas_deploy/main.gs
+          if [ -f appsscript.json ]; then
+            cp appsscript.json gas_deploy/appsscript.json
+          else
+            printf '%s\n' \
+              '{' \
+              '  "timeZone": "Asia/Tokyo",' \
+              '  "exceptionLogging": "STACKDRIVER",' \
+              '  "runtimeVersion": "V8"' \
+              '}' > gas_deploy/appsscript.json
+          fi
+
+          # 4. GAS Script IDをSecretから設定（gas_deploy配下）
+          printf '{"scriptId":"%s","rootDir":"."}\n' "$GAS_SCRIPT_ID" > gas_deploy/.clasp.json
 
       - name: Force Deploy
         run: |
-          # 3. 強制的にプッシュを実行
+          # 5. GASへはmain.gs と appsscript.json のみをpush
+          cd gas_deploy
           clasp push -f
