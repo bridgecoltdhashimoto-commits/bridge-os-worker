@@ -1,6 +1,7 @@
 /**
- * Stage 1 + Stage 2 (minimal):
+ * Stage 1 + Stage 2 + Stage 3 (minimal):
  * Square -> Worker -> GAS -> Sheets -> Gmail
+ * Stage 3: Fulfillment Queue placeholder processing
  */
 function doPost(e) {
   const props = PropertiesService.getScriptProperties();
@@ -80,7 +81,7 @@ function getSpreadsheet_() {
 function ensureSystemSheets_(ss) {
   return {
     squareLogs: getOrCreateSheetWithHeader_(ss, 'Square_Logs', ['Timestamp', 'Status', 'Event ID', 'Event Type', 'Payment ID', 'Amount']),
-    queue: getOrCreateSheetWithHeader_(ss, 'System_Fulfillment_Queue', ['received_at', 'status', 'payment_id', 'event_id', 'buyer_email', 'amount', 'currency', 'raw_json', 'tries', 'last_error', 'updated_at']),
+    queue: getOrCreateSheetWithHeader_(ss, 'System_Fulfillment_Queue', ['received_at', 'status', 'payment_id', 'event_id', 'buyer_email', 'amount', 'currency', 'raw_json', 'tries', 'last_error', 'updated_at', 'delivery_url', 'done_at']),
     evidence: getOrCreateSheetWithHeader_(ss, 'System_Evidence_Vault', ['received_at', 'provider', 'event_id', 'payment_id', 'type', 'payload_hash', 'raw_json']),
     revenueAudit: getOrCreateSheetWithHeader_(ss, 'System_Revenue_Audit', ['received_at', 'payment_id', 'event_id', 'amount', 'currency', 'status', 'buyer_email']),
     fulfillmentLog: getOrCreateSheetWithHeader_(ss, 'System_Fulfillment_Log', ['timestamp', 'level', 'payment_id', 'event_id', 'message']),
@@ -178,6 +179,101 @@ function extractBuyerEmail_(payload, payment) {
     }
   }
   return '';
+}
+
+function STAGE3_manualTest() {
+  return processFulfillmentQueue();
+}
+
+function processFulfillmentQueue() {
+  const ss = getSpreadsheet_();
+  const sheets = ensureSystemSheets_(ss);
+  const queueSheet = sheets.queue;
+  const logSheet = sheets.fulfillmentLog;
+  const dlqSheet = sheets.fulfillmentDLQ;
+  const values = queueSheet.getDataRange().getValues();
+
+  if (values.length <= 1) {
+    appendFulfillmentLog_(logSheet, 'INFO', '', '', 'Stage3 queue processing skipped: no queue rows');
+    return { ok: true, processed: 0, failed: 0, skipped: 0 };
+  }
+
+  const headers = values[0];
+  const col = getHeaderIndexMap_(headers);
+  let processed = 0;
+  let failed = 0;
+  let skipped = 0;
+
+  for (var i = 1; i < values.length; i++) {
+    const row = values[i];
+    const sheetRow = i + 1;
+    const status = String(row[col.status] || '');
+    const paymentId = String(row[col.payment_id] || '');
+    const eventId = String(row[col.event_id] || '');
+    const rawJson = String(row[col.raw_json] || '');
+
+    if (status !== 'ENQUEUED') {
+      skipped++;
+      continue;
+    }
+
+    try {
+      const startedAt = new Date().toISOString();
+      setCellByHeader_(queueSheet, sheetRow, col, 'status', 'PROCESSING');
+      setCellByHeader_(queueSheet, sheetRow, col, 'updated_at', startedAt);
+      appendFulfillmentLog_(logSheet, 'INFO', paymentId, eventId, 'Stage3 fulfillment started');
+
+      const doneAt = new Date().toISOString();
+      setCellByHeader_(queueSheet, sheetRow, col, 'delivery_url', 'STAGE3_PLACEHOLDER_DELIVERY');
+      setCellByHeader_(queueSheet, sheetRow, col, 'done_at', doneAt);
+      setCellByHeader_(queueSheet, sheetRow, col, 'updated_at', doneAt);
+      setCellByHeader_(queueSheet, sheetRow, col, 'status', 'DONE');
+
+      appendFulfillmentLog_(logSheet, 'INFO', paymentId, eventId, 'Stage3 fulfillment completed with placeholder delivery');
+      processed++;
+    } catch (err) {
+      failed++;
+      const message = String(err && err.message ? err.message : err);
+      const currentTries = Number(row[col.tries] || 0);
+      const updatedAt = new Date().toISOString();
+
+      safeSetCellByHeader_(queueSheet, sheetRow, col, 'tries', currentTries + 1);
+      safeSetCellByHeader_(queueSheet, sheetRow, col, 'last_error', message);
+      safeSetCellByHeader_(queueSheet, sheetRow, col, 'updated_at', updatedAt);
+      safeSetCellByHeader_(queueSheet, sheetRow, col, 'status', 'ERROR');
+
+      appendFulfillmentLog_(logSheet, 'ERROR', paymentId, eventId, message);
+      dlqSheet.appendRow([updatedAt, paymentId, eventId, 'FULFILLMENT_ERROR', message, rawJson]);
+    }
+  }
+
+  return { ok: true, processed: processed, failed: failed, skipped: skipped };
+}
+
+function getHeaderIndexMap_(headers) {
+  const map = {};
+  headers.forEach(function (header, index) {
+    map[String(header)] = index;
+  });
+  return map;
+}
+
+function setCellByHeader_(sheet, rowNumber, col, header, value) {
+  if (typeof col[header] === 'undefined') {
+    throw new Error('Missing required header: ' + header);
+  }
+  sheet.getRange(rowNumber, col[header] + 1).setValue(value);
+}
+
+function safeSetCellByHeader_(sheet, rowNumber, col, header, value) {
+  if (typeof col[header] === 'undefined') {
+    return;
+  }
+  sheet.getRange(rowNumber, col[header] + 1).setValue(value);
+}
+
+function appendFulfillmentLog_(logSheet, level, paymentId, eventId, message) {
+  logSheet.appendRow([new Date().toISOString(), level, paymentId, eventId, message]);
 }
 
 function jsonResponse_(obj) {
