@@ -263,7 +263,14 @@ function processFulfillmentQueue() {
         safeSetCellByHeader_(queueSheet, sheetRow, col, 'updated_at', updatedAt);
         safeSetCellByHeader_(queueSheet, sheetRow, col, 'status', 'ERROR');
 
-        dlqSheet.appendRow([eventId, paymentId, buyerEmail, message, JSON.stringify(row), updatedAt]);
+        appendFulfillmentDlq_(dlqSheet, {
+          event_id: eventId,
+          payment_id: paymentId,
+          buyer_email: buyerEmail,
+          error: message,
+          raw_row: JSON.stringify(row),
+          timestamp: updatedAt,
+        });
       }
     }
 
@@ -296,17 +303,21 @@ function safeSetCellByHeader_(sheet, rowNumber, col, header, value) {
 }
 
 function appendFulfillmentLog_(logSheet, row) {
-  logSheet.appendRow([
-    row.sent_at || '',
-    row.payment_id || '',
-    row.event_id || '',
-    row.buyer_email || '',
-    row.delivery_url || '',
-    row.mail_subject || '',
-    row.mail_body_hash || '',
-    row.status || '',
-    row.created_at || new Date().toISOString(),
-  ]);
+  appendRowByHeader_(logSheet, row);
+}
+
+function appendFulfillmentDlq_(dlqSheet, row) {
+  appendRowByHeader_(dlqSheet, row);
+}
+
+function appendRowByHeader_(sheet, rowObj) {
+  const lastColumn = sheet.getLastColumn();
+  const headers = lastColumn > 0 ? sheet.getRange(1, 1, 1, lastColumn).getValues()[0] : [];
+  const row = headers.map(function (header) {
+    const key = String(header);
+    return Object.prototype.hasOwnProperty.call(rowObj, key) ? rowObj[key] : '';
+  });
+  sheet.appendRow(row);
 }
 
 function getDeliveryConfig_() {
@@ -334,7 +345,7 @@ function buildDeliveryMail_(shopName, deliveryUrl, supportFormUrl) {
   if (supportFormUrl) {
     lines.push('お問い合わせフォーム: ' + supportFormUrl);
   }
-  return { subject: subject, body: lines.join('\\n') };
+  return { subject: subject, body: lines.join('\n') };
 }
 
 function toSha256Hex_(text) {
