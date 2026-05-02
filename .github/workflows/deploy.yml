@@ -36,13 +36,12 @@ jobs:
           if [ -f appsscript.json ]; then
             cp appsscript.json gas_deploy/appsscript.json
           else
-            cat << 'EOF' > gas_deploy/appsscript.json
-            {
-              "timeZone": "Asia/Tokyo",
-              "exceptionLogging": "STACKDRIVER",
-              "runtimeVersion": "V8"
-            }
-            EOF
+            printf '%s\n' \
+              '{' \
+              '  "timeZone": "Asia/Tokyo",' \
+              '  "exceptionLogging": "STACKDRIVER",' \
+              '  "runtimeVersion": "V8"' \
+              '}' > gas_deploy/appsscript.json
           fi
 
           # 4. GAS Script IDをSecretから設定（gas_deploy配下）
