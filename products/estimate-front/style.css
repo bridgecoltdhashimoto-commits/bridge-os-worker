@@ -407,3 +407,52 @@ body.ef-page {
     grid-template-columns: repeat(3, 1fr);
   }
 }
+
+.ef-hero-list {
+  display: grid;
+  gap: 10px;
+  max-width: 760px;
+  margin: 24px 0 0;
+  padding: 18px 20px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.08);
+  list-style: none;
+}
+
+.ef-hero-list li {
+  position: relative;
+  padding-left: 26px;
+  color: rgba(255, 255, 255, 0.92);
+  font-weight: 700;
+}
+
+.ef-hero-list li::before {
+  position: absolute;
+  left: 0;
+  color: var(--ef-sand);
+  content: "●";
+  font-size: 0.76rem;
+}
+
+.ef-section-lead {
+  max-width: 760px;
+  margin: 16px 0 0;
+  color: var(--ef-gray-600);
+}
+
+@media (min-width: 720px) {
+  .ef-card-grid--dense {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (min-width: 960px) {
+  .ef-card-grid--dense {
+    grid-template-columns: repeat(4, 1fr);
+  }
+
+  .ef-feature-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
