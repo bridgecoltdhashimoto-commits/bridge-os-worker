@@ -336,6 +336,18 @@ body.ef-page {
   color: rgba(255, 255, 255, 0.82);
 }
 
+.ef-apply-list {
+  display: grid;
+  gap: 8px;
+  margin: 20px 0 24px;
+  padding-left: 1.2em;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.ef-apply-list li::marker {
+  color: var(--ef-sand);
+}
+
 .ef-contact {
   text-align: center;
 }
