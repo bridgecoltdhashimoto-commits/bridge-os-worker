@@ -1,3 +1,4 @@
+// temporary diagnostics for Issue #12: remove after the Square webhook 502 cause is identified.
 export default {
   async fetch(request, env) {
     if (request.method !== "POST") {
@@ -24,8 +25,22 @@ export default {
       });
 
       const gasText = await gasResponse.text();
-      return new Response(gasText, {
-        status: gasResponse.ok ? 200 : 502,
+      const gasStatus = gasResponse.status;
+      const gasOk = gasResponse.ok;
+      const gasContentType = gasResponse.headers.get("content-type") || "";
+      const gasTextHead = gasText.slice(0, 1000);
+      const diagnostics = {
+        stage: "GAS_RESPONSE_DIAG",
+        gasStatus,
+        gasOk,
+        gasContentType,
+        gasTextHead,
+      };
+
+      console.error(JSON.stringify(diagnostics));
+
+      return new Response(JSON.stringify(diagnostics), {
+        status: gasOk ? 200 : 502,
         headers: { "Content-Type": "application/json" },
       });
     } catch (e) {
