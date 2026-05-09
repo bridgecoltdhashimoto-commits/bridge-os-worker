@@ -86,6 +86,7 @@ function ensureSystemSheets_(ss) {
     revenueAudit: getOrCreateSheetWithHeader_(ss, 'System_Revenue_Audit', ['received_at', 'payment_id', 'event_id', 'amount', 'currency', 'status', 'buyer_email']),
     fulfillmentLog: getOrCreateSheetWithHeader_(ss, 'System_Fulfillment_Log', ['sent_at', 'payment_id', 'event_id', 'buyer_email', 'delivery_url', 'mail_subject', 'mail_body_hash', 'status', 'created_at']),
     fulfillmentDLQ: getOrCreateSheetWithHeader_(ss, 'System_Fulfillment_DLQ', ['event_id', 'payment_id', 'buyer_email', 'error', 'raw_row', 'timestamp']),
+    aiIntakeLog: getOrCreateSheetWithHeader_(ss, 'System_AI_Intake_Log', ['created_at', 'payment_id', 'event_id', 'buyer_email', 'status', 'reason', 'model', 'draft_hash', 'draft_text', 'review_required', 'raw_summary']),
   };
 }
 
@@ -196,6 +197,7 @@ function processFulfillmentQueue() {
   const queueSheet = sheets.queue;
   const logSheet = sheets.fulfillmentLog;
   const dlqSheet = sheets.fulfillmentDLQ;
+  const aiIntakeLogSheet = sheets.aiIntakeLog;
   try {
     const values = queueSheet.getDataRange().getValues();
     if (values.length <= 1) {
@@ -228,12 +230,19 @@ function processFulfillmentQueue() {
         setCellByHeader_(queueSheet, sheetRow, col, 'updated_at', startedAt);
 
         const delivery = getDeliveryConfig_();
+        const aiIntakeResult = maybeCreateProofPackAiIntake_(aiIntakeLogSheet, {
+          payment_id: paymentId,
+          event_id: eventId,
+          buyer_email: buyerEmail,
+          raw_json: rawJson,
+        });
         if (!buyerEmail) {
           throw new Error('buyer_email is empty');
         }
 
         const mail = buildDeliveryMail_(delivery.shopName, delivery.deliveryUrl, delivery.supportFormUrl);
         GmailApp.sendEmail(buyerEmail, mail.subject, mail.body);
+        notifyAdminOfProofPackAiIntake_(delivery.adminEmail, aiIntakeResult);
 
         const doneAt = new Date().toISOString();
         setCellByHeader_(queueSheet, sheetRow, col, 'delivery_url', delivery.deliveryUrl);
@@ -370,6 +379,218 @@ function buildDeliveryMail_(shopName, deliveryUrl, supportFormUrl) {
     lines.push('納品不備のご連絡窓口: ' + supportFormUrl);
   }
   return { subject: subject, body: lines.join('\n') };
+}
+
+
+function maybeCreateProofPackAiIntake_(aiIntakeLogSheet, context) {
+  const config = getProofPackAiIntakeConfig_();
+  const createdAt = new Date().toISOString();
+  const baseRow = {
+    created_at: createdAt,
+    payment_id: context.payment_id || '',
+    event_id: context.event_id || '',
+    buyer_email: context.buyer_email || '',
+    status: 'SKIPPED',
+    reason: '',
+    model: config.model,
+    draft_hash: '',
+    draft_text: '',
+    review_required: 'TRUE',
+    raw_summary: summarizeProofPackRawJson_(context.raw_json || ''),
+  };
+
+  if (!config.enabled) {
+    baseRow.reason = 'feature_flag_disabled';
+    appendRowByHeader_(aiIntakeLogSheet, baseRow);
+    return baseRow;
+  }
+
+  if (!config.apiKey) {
+    baseRow.reason = 'openai_api_key_missing';
+    appendRowByHeader_(aiIntakeLogSheet, baseRow);
+    return baseRow;
+  }
+
+  if (containsProofPackSensitiveTroubleTerms_(context.raw_json || '')) {
+    baseRow.status = 'BLOCKED';
+    baseRow.reason = 'sensitive_trouble_terms_in_input';
+    appendRowByHeader_(aiIntakeLogSheet, baseRow);
+    return baseRow;
+  }
+
+  let draftText = '';
+  try {
+    const prompt = buildProofPackAiIntakePrompt_(context, baseRow.raw_summary);
+    const response = callOpenAiForProofPackAiIntake_(config, prompt);
+    draftText = extractOpenAiProofPackText_(response);
+  } catch (err) {
+    baseRow.status = 'ERROR';
+    baseRow.reason = String(err && err.message ? err.message : err).slice(0, 300);
+    appendRowByHeader_(aiIntakeLogSheet, baseRow);
+    return baseRow;
+  }
+
+  if (!draftText) {
+    baseRow.status = 'ERROR';
+    baseRow.reason = 'empty_ai_response';
+    appendRowByHeader_(aiIntakeLogSheet, baseRow);
+    return baseRow;
+  }
+
+  if (containsProofPackSensitiveTroubleTerms_(draftText)) {
+    baseRow.status = 'BLOCKED';
+    baseRow.reason = 'sensitive_trouble_terms_in_ai_output';
+    appendRowByHeader_(aiIntakeLogSheet, baseRow);
+    return baseRow;
+  }
+
+  baseRow.status = 'DRAFT_READY';
+  baseRow.reason = 'admin_review_required_not_auto_sent';
+  baseRow.draft_text = draftText;
+  baseRow.draft_hash = toSha256Hex_(draftText);
+  appendRowByHeader_(aiIntakeLogSheet, baseRow);
+  return baseRow;
+}
+
+function getProofPackAiIntakeConfig_() {
+  const props = PropertiesService.getScriptProperties();
+  return {
+    enabled: String(props.getProperty('PROOFPACK_AI_INTAKE_ENABLED') || 'false').toLowerCase() === 'true',
+    apiKey: String(props.getProperty('OPENAI_API_KEY') || ''),
+    model: String(props.getProperty('PROOFPACK_AI_INTAKE_MODEL') || 'gpt-4o-mini'),
+    endpoint: String(props.getProperty('OPENAI_RESPONSES_URL') || 'https://api.openai.com/v1/responses'),
+  };
+}
+
+function buildProofPackAiIntakePrompt_(context, rawSummary) {
+  return [
+    'BRIDGE ProofPack AI受付 v1として、購入後の管理者確認用受付メモを日本語で作成してください。',
+    '出力は購入者へ自動送信されません。管理者レビュー前提の短い箇条書きだけにしてください。',
+    '未払い、クレーム、返金、法的トラブルに関する文面・助言・交渉文・請求文は絶対に作らないでください。',
+    '専門家対応が必要な判断、回収代行、代理交渉、購入代金の戻し判断、個別紛争対応は提供対象外と明記してください。',
+    '',
+    '受付情報:',
+    'payment_id: ' + String(context.payment_id || ''),
+    'event_id: ' + String(context.event_id || ''),
+    'buyer_email_present: ' + (context.buyer_email ? 'yes' : 'no'),
+    'raw_summary: ' + String(rawSummary || ''),
+  ].join('\n');
+}
+
+function callOpenAiForProofPackAiIntake_(config, prompt) {
+  const response = UrlFetchApp.fetch(config.endpoint, {
+    method: 'post',
+    contentType: 'application/json',
+    headers: {
+      Authorization: 'Bearer ' + config.apiKey,
+    },
+    muteHttpExceptions: true,
+    payload: JSON.stringify({
+      model: config.model,
+      input: prompt,
+      temperature: 0.2,
+      max_output_tokens: 600,
+    }),
+  });
+
+  const code = response.getResponseCode();
+  const body = response.getContentText();
+  if (code < 200 || code >= 300) {
+    throw new Error('openai_api_error_' + code + ': ' + body.slice(0, 300));
+  }
+  return JSON.parse(body);
+}
+
+function extractOpenAiProofPackText_(response) {
+  if (!response) {
+    return '';
+  }
+  if (response.output_text) {
+    return String(response.output_text).trim();
+  }
+  if (response.output && response.output.length) {
+    const parts = [];
+    response.output.forEach(function (item) {
+      if (!item || !item.content) {
+        return;
+      }
+      item.content.forEach(function (content) {
+        if (content && content.text) {
+          parts.push(String(content.text));
+        }
+      });
+    });
+    return parts.join('\n').trim();
+  }
+  return '';
+}
+
+function summarizeProofPackRawJson_(rawJson) {
+  if (!rawJson) {
+    return '';
+  }
+  try {
+    const payload = JSON.parse(rawJson);
+    const payment = payload.data && payload.data.object && payload.data.object.payment ? payload.data.object.payment : {};
+    const amount = payment.amount_money && typeof payment.amount_money.amount !== 'undefined' ? payment.amount_money.amount : '';
+    const currency = payment.amount_money && payment.amount_money.currency ? payment.amount_money.currency : '';
+    const status = payment.status || '';
+    return ['type=' + String(payload.type || ''), 'payment_status=' + String(status), 'amount=' + String(amount), 'currency=' + String(currency)].join(', ');
+  } catch (err) {
+    return 'unparseable_raw_json';
+  }
+}
+
+function containsProofPackSensitiveTroubleTerms_(text) {
+  const normalized = String(text || '').toLowerCase();
+  const blockedTerms = [
+    '未払い',
+    '未収',
+    '滞納',
+    '督促',
+    '請求書未払い',
+    'クレーム',
+    '苦情',
+    '返金',
+    '返品',
+    'キャンセル返金',
+    '法的',
+    '法律',
+    '訴訟',
+    '裁判',
+    '弁護士',
+    '内容証明',
+    '債権回収',
+    '代理交渉',
+    'refund',
+    'claim',
+    'complaint',
+    'legal',
+    'lawsuit',
+    'attorney',
+    'lawyer',
+  ];
+  return blockedTerms.some(function (term) {
+    return normalized.indexOf(term.toLowerCase()) !== -1;
+  });
+}
+
+function notifyAdminOfProofPackAiIntake_(adminEmail, aiIntakeResult) {
+  if (!adminEmail || !aiIntakeResult || aiIntakeResult.status !== 'DRAFT_READY') {
+    return;
+  }
+  GmailApp.sendEmail(
+    adminEmail,
+    '【要確認】BRIDGE ProofPack AI受付ドラフトを作成しました',
+    [
+      'BRIDGE ProofPack AI受付 v1が管理者確認用ドラフトを作成しました。',
+      'この内容は購入者へ自動送信していません。必ずSystem_AI_Intake_Logで確認してください。',
+      '',
+      'payment_id: ' + aiIntakeResult.payment_id,
+      'event_id: ' + aiIntakeResult.event_id,
+      'draft_hash: ' + aiIntakeResult.draft_hash,
+    ].join('\n')
+  );
 }
 
 function toSha256Hex_(text) {
