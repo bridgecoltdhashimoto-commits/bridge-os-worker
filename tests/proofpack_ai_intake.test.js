@@ -190,4 +190,54 @@ function responseJson(output) {
   assert.strictEqual(rows.length, 1);
 }
 
+{
+  const { context, rows, sheet } = loadMain({ props: {} });
+  const payload = {
+    type: 'proofpack.ai_intake',
+    source: 'line',
+    line_event_id: 'line-e1',
+    message: '納品URLについて質問です',
+  };
+  assert.strictEqual(context.isProofPackExternalAiIntakePayload_(payload), true);
+  const result = context.recordProofPackExternalAiIntake_(sheet, payload, JSON.stringify(payload));
+  const row = rowObject(rows[0]);
+  assert.strictEqual(result.status, 'SKIPPED');
+  assert.strictEqual(result.reason, 'feature_flag_disabled');
+  assert.strictEqual(row.source, 'line');
+  assert.strictEqual(row.event_id, 'line-e1');
+  assert.strictEqual(row.original_message, '納品URLについて質問です');
+  assert.strictEqual(row.raw_summary.includes('source=line'), true);
+  assert.strictEqual(rows.length, 1);
+}
+
+{
+  const { context, rows, sheet } = loadMain({ props: { PROOFPACK_AI_INTAKE_ENABLED: 'true', OPENAI_API_KEY: 'test' } });
+  const payload = {
+    type: 'proofpack.ai_intake',
+    source: 'gmail',
+    message_id: 'gmail-m1',
+    email: 'customer@example.com',
+    subject: '返金について',
+    body: '納品URLを確認したいです',
+  };
+  assert.strictEqual(context.isProofPackExternalAiIntakePayload_(payload), true);
+  const result = context.recordProofPackExternalAiIntake_(sheet, payload, JSON.stringify(payload));
+  const row = rowObject(rows[0]);
+  assert.strictEqual(result.status, 'BLOCKED');
+  assert.strictEqual(result.reason, 'sensitive_trouble_terms_in_input');
+  assert.strictEqual(row.source, 'gmail');
+  assert.strictEqual(row.event_id, 'gmail-m1');
+  assert.strictEqual(row.buyer_email, 'customer@example.com');
+  assert.strictEqual(row.category, 'sensitive_trouble');
+  assert.strictEqual(row.risk_level, 'high');
+  assert.strictEqual(row.draft_json, '');
+  assert.strictEqual(rows.length, 1);
+}
+
+{
+  const { context } = loadMain({ props: {} });
+  assert.strictEqual(context.isProofPackExternalAiIntakePayload_({ source: 'square', type: 'payment.updated', message: 'x' }), false);
+  assert.strictEqual(context.isProofPackExternalAiIntakePayload_({ source: 'lp', type: 'proofpack.ai_intake', inquiry: '問い合わせです' }), true);
+}
+
 console.log('proofpack_ai_intake tests passed');
