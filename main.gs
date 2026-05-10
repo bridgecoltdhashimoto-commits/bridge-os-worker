@@ -21,6 +21,11 @@ function doPost(e) {
     const rawData = (e && e.postData && e.postData.contents) ? e.postData.contents : '{}';
     const payload = JSON.parse(rawData);
 
+    if (isProofPackExternalAiIntakePayload_(payload)) {
+      const result = recordProofPackExternalAiIntake_(sheets.aiIntakeLog, payload, rawData);
+      return jsonResponse_({ ok: true, status: 'ai_intake_recorded', source: result.source, intake_status: result.status, reason: result.reason });
+    }
+
     const eventId = payload.event_id || '';
     const eventType = payload.type || '';
     const payment = payload.data && payload.data.object && payload.data.object.payment ? payload.data.object.payment : {};
@@ -383,6 +388,93 @@ function buildDeliveryMail_(shopName, deliveryUrl, supportFormUrl) {
   return { subject: subject, body: lines.join('\n') };
 }
 
+
+function isProofPackExternalAiIntakePayload_(payload) {
+  if (!payload) {
+    return false;
+  }
+  const source = normalizeProofPackSource_(payload.source || payload.channel || payload.intake_source);
+  const externalSources = ['line', 'gmail', 'lp'];
+  if (externalSources.indexOf(source) < 0) {
+    return false;
+  }
+  const type = String(payload.type || payload.event_type || '').toLowerCase();
+  return type === 'proofpack.ai_intake' || type === 'proofpack_ai_intake' || !!extractProofPackOriginalMessageFromPayload_(payload);
+}
+
+function recordProofPackExternalAiIntake_(aiIntakeLogSheet, payload, rawData) {
+  const context = buildProofPackExternalAiIntakeContext_(payload, rawData);
+  return maybeCreateProofPackAiIntake_(aiIntakeLogSheet, context);
+}
+
+function buildProofPackExternalAiIntakeContext_(payload, rawData) {
+  const source = normalizeProofPackSource_(payload.source || payload.channel || payload.intake_source);
+  return {
+    source: source,
+    payment_id: String(payload.payment_id || payload.paymentId || ''),
+    event_id: extractProofPackExternalEventId_(payload, source),
+    buyer_email: extractProofPackExternalEmail_(payload),
+    raw_json: rawData,
+    original_message: extractProofPackOriginalMessageFromPayload_(payload),
+  };
+}
+
+function extractProofPackExternalEventId_(payload, source) {
+  const candidates = [
+    payload.event_id,
+    payload.eventId,
+    payload.message_id,
+    payload.messageId,
+    payload.gmail_message_id,
+    payload.line_event_id,
+    payload.inquiry_id,
+    payload.id,
+  ];
+  for (var i = 0; i < candidates.length; i++) {
+    if (candidates[i]) {
+      return String(candidates[i]);
+    }
+  }
+  return source + '-' + toSha256Hex_(JSON.stringify(payload)).slice(0, 16);
+}
+
+function extractProofPackExternalEmail_(payload) {
+  const candidates = [
+    payload.buyer_email,
+    payload.email,
+    payload.from_email,
+    payload.reply_to,
+    payload.from && payload.from.email,
+    payload.contact && payload.contact.email,
+  ];
+  for (var i = 0; i < candidates.length; i++) {
+    if (candidates[i]) {
+      return String(candidates[i]);
+    }
+  }
+  return '';
+}
+
+function extractProofPackOriginalMessageFromPayload_(payload) {
+  const candidates = [
+    payload.original_message,
+    payload.message,
+    payload.text,
+    payload.subject && payload.body ? String(payload.subject) + '\n' + String(payload.body) : '',
+    payload.subject,
+    payload.body,
+    payload.inquiry,
+    payload.question,
+    payload.content,
+    payload.description,
+  ];
+  for (var i = 0; i < candidates.length; i++) {
+    if (candidates[i]) {
+      return String(candidates[i]).slice(0, 2000);
+    }
+  }
+  return '';
+}
 
 function maybeCreateProofPackAiIntake_(aiIntakeLogSheet, context) {
   const config = getProofPackAiIntakeConfig_();
@@ -774,7 +866,9 @@ function summarizeProofPackRawJson_(rawJson) {
     const amount = payment.amount_money && typeof payment.amount_money.amount !== 'undefined' ? payment.amount_money.amount : '';
     const currency = payment.amount_money && payment.amount_money.currency ? payment.amount_money.currency : '';
     const status = payment.status || '';
-    return ['type=' + String(payload.type || ''), 'payment_status=' + String(status), 'amount=' + String(amount), 'currency=' + String(currency)].join(', ');
+    const source = normalizeProofPackSource_(payload.source || payload.channel || payload.intake_source || '');
+    const messagePresent = extractProofPackOriginalMessageFromPayload_(payload) ? 'yes' : 'no';
+    return ['type=' + String(payload.type || ''), 'source=' + String(source || ''), 'message_present=' + messagePresent, 'payment_status=' + String(status), 'amount=' + String(amount), 'currency=' + String(currency)].join(', ');
   } catch (err) {
     return 'unparseable_raw_json';
   }
