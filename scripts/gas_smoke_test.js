@@ -9,6 +9,11 @@ async function main() {
     return;
   }
 
+  const url = new URL(webAppUrl);
+  if (process.env.GAS_WEBHOOK_TOKEN) {
+    url.searchParams.set('token', process.env.GAS_WEBHOOK_TOKEN);
+  }
+
   const payload = {
     type: 'proofpack.ai_intake',
     source: 'lp',
@@ -16,7 +21,7 @@ async function main() {
     message: 'GitHub Actions GAS smoke test',
   };
 
-  const response = await fetch(webAppUrl, {
+  const response = await fetch(url.toString(), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
