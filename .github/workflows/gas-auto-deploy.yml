@@ -73,9 +73,7 @@ jobs:
           mkdir -p .gas-push
           cp main.gs .gas-push/main.gs
           cp gas-deploy/appsscript.json .gas-push/appsscript.json
-          cat > .gas-push/.clasp.json <<EOF
-          {"scriptId":"${GAS_SCRIPT_ID}","rootDir":"."}
-          EOF
+          printf '{"scriptId":"%s","rootDir":"."}\n' "${GAS_SCRIPT_ID}" > .gas-push/.clasp.json
           ls -la .gas-push
 
       - name: Static check
