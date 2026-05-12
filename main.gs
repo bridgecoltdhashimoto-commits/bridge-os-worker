@@ -36,6 +36,7 @@ function doPost(e) {
     const paymentId = payment.id || '';
     const paymentStatus = payment.status || '';
     const buyerEmail = extractBuyerEmail_(payload, payment);
+    const product = resolveProductFromPayment_(payload, payment, sheets.productMaster);
 
     if (eventType !== 'payment.updated') {
       return jsonResponse_({ ok: true, status: 'ignored', reason: 'non_target_event' });
@@ -50,9 +51,9 @@ function doPost(e) {
     }
 
     logSheet.appendRow([new Date(), 'RECEIVED', eventId, eventType, paymentId, amount]);
-    appendQueueIfNotExists_(sheets.queue, eventId, paymentId, buyerEmail, amount, currency, rawData);
+    appendQueueIfNotExists_(sheets.queue, eventId, paymentId, buyerEmail, amount, currency, rawData, product);
     appendEvidence_(sheets.evidence, eventId, paymentId, rawData);
-    appendRevenueAudit_(sheets.revenueAudit, eventId, paymentId, amount, currency, paymentStatus, buyerEmail);
+    appendRevenueAudit_(sheets.revenueAudit, eventId, paymentId, amount, currency, paymentStatus, buyerEmail, product);
 
     if (adminEmail) {
       GmailApp.sendEmail(
@@ -86,11 +87,12 @@ function getSpreadsheet_() {
 function ensureSystemSheets_(ss) {
   return {
     squareLogs: getOrCreateSheetWithHeader_(ss, 'Square_Logs', ['Timestamp', 'Status', 'Event ID', 'Event Type', 'Payment ID', 'Amount']),
-    queue: getOrCreateSheetWithHeader_(ss, 'System_Fulfillment_Queue', ['received_at', 'status', 'payment_id', 'event_id', 'buyer_email', 'amount', 'currency', 'raw_json', 'tries', 'last_error', 'updated_at', 'delivery_url', 'done_at']),
+    queue: getOrCreateSheetWithHeader_(ss, 'System_Fulfillment_Queue', ['received_at', 'status', 'payment_id', 'event_id', 'buyer_email', 'amount', 'currency', 'raw_json', 'tries', 'last_error', 'updated_at', 'delivery_url', 'done_at', 'product_key', 'product_name', 'match_type', 'match_value']),
+    productMaster: getOrCreateSheetWithHeader_(ss, 'Product_Master', ['product_key', 'product_name', 'active', 'match_type', 'match_value', 'delivery_url', 'mail_subject', 'mail_body_template', 'support_url', 'notes', 'created_at', 'updated_at']),
     evidence: getOrCreateSheetWithHeader_(ss, 'System_Evidence_Vault', ['received_at', 'provider', 'event_id', 'payment_id', 'type', 'payload_hash', 'raw_json']),
-    revenueAudit: getOrCreateSheetWithHeader_(ss, 'System_Revenue_Audit', ['received_at', 'payment_id', 'event_id', 'amount', 'currency', 'status', 'buyer_email']),
-    fulfillmentLog: getOrCreateSheetWithHeader_(ss, 'System_Fulfillment_Log', ['sent_at', 'payment_id', 'event_id', 'buyer_email', 'delivery_url', 'mail_subject', 'mail_body_hash', 'status', 'created_at']),
-    fulfillmentDLQ: getOrCreateSheetWithHeader_(ss, 'System_Fulfillment_DLQ', ['event_id', 'payment_id', 'buyer_email', 'error', 'raw_row', 'timestamp']),
+    revenueAudit: getOrCreateSheetWithHeader_(ss, 'System_Revenue_Audit', ['received_at', 'payment_id', 'event_id', 'amount', 'currency', 'status', 'buyer_email', 'product_key', 'product_name']),
+    fulfillmentLog: getOrCreateSheetWithHeader_(ss, 'System_Fulfillment_Log', ['sent_at', 'payment_id', 'event_id', 'buyer_email', 'delivery_url', 'mail_subject', 'mail_body_hash', 'status', 'created_at', 'product_key', 'product_name']),
+    fulfillmentDLQ: getOrCreateSheetWithHeader_(ss, 'System_Fulfillment_DLQ', ['event_id', 'payment_id', 'buyer_email', 'error', 'raw_row', 'timestamp', 'product_key', 'product_name']),
     aiIntakeLog: getOrCreateSheetWithHeader_(ss, 'System_AI_Intake_Log', ['created_at', 'updated_at', 'source', 'payment_id', 'event_id', 'buyer_email', 'original_message', 'category', 'risk_level', 'reply_mode', 'draft_only', 'review_required', 'status', 'reason', 'model', 'safety_model', 'draft_hash', 'draft_json', 'draft_text', 'safety_notes', 'last_error', 'raw_summary']),
   };
 }
@@ -137,13 +139,29 @@ function isPaymentIdAlreadyLogged_(sheet, paymentId) {
   });
 }
 
-function appendQueueIfNotExists_(queueSheet, eventId, paymentId, buyerEmail, amount, currency, rawData) {
+function appendQueueIfNotExists_(queueSheet, eventId, paymentId, buyerEmail, amount, currency, rawData, product) {
   if (paymentId && isPaymentIdExistsInQueue_(queueSheet, paymentId)) {
     return;
   }
 
   const now = new Date();
-  queueSheet.appendRow([now.toISOString(), 'ENQUEUED', paymentId, eventId, buyerEmail, amount, currency, rawData, 0, '', now.toISOString()]);
+  appendRowByHeader_(queueSheet, {
+    received_at: now.toISOString(),
+    status: 'ENQUEUED',
+    payment_id: paymentId,
+    event_id: eventId,
+    buyer_email: buyerEmail,
+    amount: amount,
+    currency: currency,
+    raw_json: rawData,
+    tries: 0,
+    last_error: '',
+    updated_at: now.toISOString(),
+    product_key: product && product.product_key ? product.product_key : 'UNKNOWN_PRODUCT',
+    product_name: product && product.product_name ? product.product_name : '',
+    match_type: product && product.match_type ? product.match_type : '',
+    match_value: product && product.match_value ? product.match_value : '',
+  });
 }
 
 function isPaymentIdExistsInQueue_(queueSheet, paymentId) {
@@ -167,8 +185,18 @@ function appendEvidence_(evidenceSheet, eventId, paymentId, rawData) {
   evidenceSheet.appendRow([new Date().toISOString(), 'square', eventId, paymentId, 'payment.updated', payloadHash, rawData]);
 }
 
-function appendRevenueAudit_(auditSheet, eventId, paymentId, amount, currency, status, buyerEmail) {
-  auditSheet.appendRow([new Date().toISOString(), paymentId, eventId, amount, currency, status, buyerEmail]);
+function appendRevenueAudit_(auditSheet, eventId, paymentId, amount, currency, status, buyerEmail, product) {
+  appendRowByHeader_(auditSheet, {
+    received_at: new Date().toISOString(),
+    payment_id: paymentId,
+    event_id: eventId,
+    amount: amount,
+    currency: currency,
+    status: status,
+    buyer_email: buyerEmail,
+    product_key: product && product.product_key ? product.product_key : 'UNKNOWN_PRODUCT',
+    product_name: product && product.product_name ? product.product_name : '',
+  });
 }
 
 function extractBuyerEmail_(payload, payment) {
@@ -192,6 +220,11 @@ function STAGE3_manualTest() {
 }
 
 function processFulfillmentQueue() {
+  return processFulfillmentQueue_({ dryRun: false });
+}
+
+function processFulfillmentQueue_(options) {
+  const dryRun = !!(options && options.dryRun);
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(30000)) {
     return { ok: false, reason: 'lock_not_acquired' };
@@ -231,27 +264,52 @@ function processFulfillmentQueue() {
 
       try {
         const startedAt = new Date().toISOString();
-        setCellByHeader_(queueSheet, sheetRow, col, 'status', 'PROCESSING');
-        setCellByHeader_(queueSheet, sheetRow, col, 'updated_at', startedAt);
+        if (!dryRun) {
+          setCellByHeader_(queueSheet, sheetRow, col, 'status', 'PROCESSING');
+          setCellByHeader_(queueSheet, sheetRow, col, 'updated_at', startedAt);
+        }
 
-        const delivery = getDeliveryConfig_();
-        const aiIntakeResult = maybeCreateProofPackAiIntake_(aiIntakeLogSheet, {
+        const payload = parseJsonSafe_(rawJson);
+        const payment = payload && payload.data && payload.data.object && payload.data.object.payment ? payload.data.object.payment : {};
+        const product = resolveProductForQueueRow_(sheets.productMaster, row, col, payload, payment);
+        if (!product || product.product_key === 'UNKNOWN_PRODUCT') {
+          throw new Error('UNKNOWN_PRODUCT: product could not be resolved from Square payload');
+        }
+        const delivery = getDeliveryConfigForProduct_(product);
+        const aiIntakeResult = (!dryRun && product.product_key === 'proofpack_starter') ? maybeCreateProofPackAiIntake_(aiIntakeLogSheet, {
           source: 'square',
           payment_id: paymentId,
           event_id: eventId,
           buyer_email: buyerEmail,
           raw_json: rawJson,
           original_message: extractProofPackOriginalMessage_(rawJson),
-        });
+        }) : null;
         if (!buyerEmail) {
           throw new Error('buyer_email is empty');
         }
 
-        const mail = buildDeliveryMail_(delivery.shopName, delivery.deliveryUrl, delivery.supportFormUrl);
+        const mail = buildDeliveryMailByProduct_(product, {
+          shopName: delivery.shopName,
+          deliveryUrl: delivery.deliveryUrl,
+          supportFormUrl: delivery.supportFormUrl,
+          buyerEmail: buyerEmail,
+          paymentId: paymentId,
+          eventId: eventId,
+        });
+        if (dryRun) {
+          processed++;
+          continue;
+        }
         GmailApp.sendEmail(buyerEmail, mail.subject, mail.body);
-        notifyAdminOfProofPackAiIntake_(delivery.adminEmail, aiIntakeResult);
+        if (product.product_key === 'proofpack_starter') {
+          notifyAdminOfProofPackAiIntake_(delivery.adminEmail, aiIntakeResult);
+        }
 
         const doneAt = new Date().toISOString();
+        safeSetCellByHeader_(queueSheet, sheetRow, col, 'product_key', product.product_key);
+        safeSetCellByHeader_(queueSheet, sheetRow, col, 'product_name', product.product_name);
+        safeSetCellByHeader_(queueSheet, sheetRow, col, 'match_type', product.match_type);
+        safeSetCellByHeader_(queueSheet, sheetRow, col, 'match_value', product.match_value);
         setCellByHeader_(queueSheet, sheetRow, col, 'delivery_url', delivery.deliveryUrl);
         setCellByHeader_(queueSheet, sheetRow, col, 'done_at', doneAt);
         setCellByHeader_(queueSheet, sheetRow, col, 'updated_at', doneAt);
@@ -266,11 +324,16 @@ function processFulfillmentQueue() {
           mail_body_hash: toSha256Hex_(mail.body),
           status: 'SENT',
           created_at: doneAt,
+          product_key: product.product_key,
+          product_name: product.product_name,
         });
         processed++;
       } catch (err) {
         failed++;
         const message = String(err && err.message ? err.message : err);
+        if (dryRun) {
+          continue;
+        }
         const currentTries = Number(row[col.tries] || 0);
         const updatedAt = new Date().toISOString();
 
@@ -286,6 +349,8 @@ function processFulfillmentQueue() {
           error: message,
           raw_row: JSON.stringify(row),
           timestamp: updatedAt,
+          product_key: typeof col.product_key !== 'undefined' ? String(row[col.product_key] || '') : '',
+          product_name: typeof col.product_name !== 'undefined' ? String(row[col.product_name] || '') : '',
         });
       }
     }
@@ -337,15 +402,21 @@ function appendRowByHeader_(sheet, rowObj) {
 }
 
 function getDeliveryConfig_() {
-  const props = PropertiesService.getScriptProperties();
-  const shopName = String(props.getProperty('SHOP_NAME') || 'BRIDGE OS');
-  const deliveryUrl = String(props.getProperty('DELIVERY_URL') || '');
-  const supportFormUrl = String(props.getProperty('SUPPORT_FORM_URL') || '');
-  const adminEmail = String(props.getProperty('ADMIN_EMAIL') || '');
-  if (!deliveryUrl) {
+  const config = getBaseDeliverySettings_();
+  if (!config.deliveryUrl) {
     throw new Error('DELIVERY_URL is required');
   }
-  return { shopName: shopName, deliveryUrl: deliveryUrl, supportFormUrl: supportFormUrl, adminEmail: adminEmail };
+  return config;
+}
+
+function getBaseDeliverySettings_() {
+  const props = PropertiesService.getScriptProperties();
+  return {
+    shopName: String(props.getProperty('SHOP_NAME') || 'BRIDGE OS'),
+    deliveryUrl: String(props.getProperty('DELIVERY_URL') || ''),
+    supportFormUrl: String(props.getProperty('SUPPORT_FORM_URL') || ''),
+    adminEmail: String(props.getProperty('ADMIN_EMAIL') || ''),
+  };
 }
 
 function buildDeliveryMail_(shopName, deliveryUrl, supportFormUrl) {
@@ -388,6 +459,291 @@ function buildDeliveryMail_(shopName, deliveryUrl, supportFormUrl) {
   return { subject: subject, body: lines.join('\n') };
 }
 
+
+
+function getDeliveryConfigForProduct_(product) {
+  const base = getBaseDeliverySettings_();
+  const deliveryUrl = String(product && product.delivery_url ? product.delivery_url : base.deliveryUrl);
+  const supportFormUrl = String(product && product.support_url ? product.support_url : base.supportFormUrl);
+  if (!deliveryUrl) {
+    throw new Error('delivery_url is required for product: ' + String(product && product.product_key ? product.product_key : 'UNKNOWN_PRODUCT'));
+  }
+  return {
+    shopName: base.shopName,
+    deliveryUrl: deliveryUrl,
+    supportFormUrl: supportFormUrl,
+    adminEmail: base.adminEmail,
+  };
+}
+
+function buildDeliveryMailByProduct_(product, context) {
+  const deliveryUrl = String(context && context.deliveryUrl ? context.deliveryUrl : (product && product.delivery_url) || '');
+  const supportFormUrl = String(context && context.supportFormUrl ? context.supportFormUrl : (product && product.support_url) || '');
+  const productKey = String(product && product.product_key ? product.product_key : '');
+  const productName = String(product && product.product_name ? product.product_name : '');
+  const subjectTemplate = String(product && product.mail_subject ? product.mail_subject : '');
+  const bodyTemplate = String(product && product.mail_body_template ? product.mail_body_template : '');
+
+  if (productKey === 'proofpack_starter' && !subjectTemplate && !bodyTemplate) {
+    return buildDeliveryMail_(context && context.shopName, deliveryUrl, supportFormUrl);
+  }
+
+  const tokens = {
+    shop_name: String(context && context.shopName ? context.shopName : 'BRIDGE OS'),
+    product_key: productKey,
+    product_name: productName,
+    delivery_url: deliveryUrl,
+    support_url: supportFormUrl,
+    buyer_email: String(context && context.buyerEmail ? context.buyerEmail : ''),
+    payment_id: String(context && context.paymentId ? context.paymentId : ''),
+    event_id: String(context && context.eventId ? context.eventId : ''),
+  };
+  const subject = applyTemplate_(subjectTemplate || '【納品】' + productName + ' ご購入ありがとうございます', tokens);
+  const body = bodyTemplate
+    ? applyTemplate_(bodyTemplate, tokens)
+    : buildGenericDeliveryMailBody_(tokens);
+  return { subject: subject, body: body };
+}
+
+function buildGenericDeliveryMailBody_(tokens) {
+  const lines = [
+    'このたびは「' + tokens.product_name + '」をご購入いただき、誠にありがとうございます。',
+    '',
+    '以下URLより納品データをご確認ください。',
+    '納品URL: ' + tokens.delivery_url,
+    '',
+    '発行元: 株式会社BRIDGE',
+  ];
+  if (tokens.support_url) {
+    lines.push('納品不備のご連絡窓口: ' + tokens.support_url);
+  }
+  return lines.join('\n');
+}
+
+function applyTemplate_(template, tokens) {
+  return String(template || '').replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, function (_, key) {
+    return Object.prototype.hasOwnProperty.call(tokens, key) ? tokens[key] : '';
+  });
+}
+
+function resolveProductForQueueRow_(productSheet, row, col, payload, payment) {
+  const queuedProductKey = typeof col.product_key !== 'undefined' ? String(row[col.product_key] || '') : '';
+  if (queuedProductKey && queuedProductKey !== 'UNKNOWN_PRODUCT') {
+    const productFromMaster = findProductByKey_(getActiveProductRows_(productSheet), queuedProductKey);
+    if (productFromMaster) {
+      return productFromMaster;
+    }
+    if (queuedProductKey === 'proofpack_starter') {
+      return getProofPackFallbackProduct_('queued', queuedProductKey);
+    }
+    return getUnknownProduct_();
+  }
+  return resolveProductFromPayment_(payload, payment, productSheet);
+}
+
+function resolveProductFromPayment_(payload, payment, productSheet) {
+  const products = getActiveProductRows_(productSheet);
+  const text = buildProductSearchText_(payload, payment);
+  const amount = payment && payment.amount_money && typeof payment.amount_money.amount !== 'undefined'
+    ? Number(payment.amount_money.amount)
+    : '';
+
+  const nonAmountMatch = findMatchingProduct_(products, text, amount, false);
+  if (nonAmountMatch) {
+    return nonAmountMatch;
+  }
+
+  const amountMatch = findMatchingProduct_(products, text, amount, true);
+  if (amountMatch) {
+    return amountMatch;
+  }
+
+  if (amount === 100) {
+    return getProofPackFallbackProduct_('amount', '100');
+  }
+
+  return getUnknownProduct_();
+}
+
+function findMatchingProduct_(products, text, amount, amountOnly) {
+  for (var i = 0; i < products.length; i++) {
+    const product = products[i];
+    const matchType = String(product.match_type || '').toLowerCase();
+    const matchValue = String(product.match_value || '');
+    if (!matchValue) {
+      continue;
+    }
+    if (amountOnly) {
+      if (matchType === 'amount' && Number(matchValue) === amount) {
+        product.match_type = 'amount';
+        product.match_value = matchValue;
+        return product;
+      }
+      continue;
+    }
+    if (matchType === 'amount') {
+      continue;
+    }
+    if ((matchType === 'product_key' || matchType === 'key') && text.indexOf(String(product.product_key || '').toLowerCase()) >= 0) {
+      product.match_type = matchType;
+      product.match_value = product.product_key;
+      return product;
+    }
+    if ((matchType === 'product_name' || matchType === 'name') && text.indexOf(String(product.product_name || '').toLowerCase()) >= 0) {
+      product.match_type = matchType;
+      product.match_value = product.product_name;
+      return product;
+    }
+    if (text.indexOf(matchValue.toLowerCase()) >= 0) {
+      product.match_type = matchType || 'text';
+      product.match_value = matchValue;
+      return product;
+    }
+  }
+  return null;
+}
+
+function getActiveProductRows_(productSheet) {
+  if (!productSheet || productSheet.getLastRow() <= 1) {
+    return [];
+  }
+  const values = productSheet.getDataRange().getValues();
+  const headers = values[0];
+  const col = getHeaderIndexMap_(headers);
+  const products = [];
+  for (var i = 1; i < values.length; i++) {
+    const row = values[i];
+    const active = String(row[col.active] || '').toLowerCase();
+    const productKey = String(row[col.product_key] || '');
+    if (!productKey || ['true', '1', 'yes', 'y'].indexOf(active) < 0) {
+      continue;
+    }
+    products.push({
+      product_key: productKey,
+      product_name: String(row[col.product_name] || productKey),
+      active: String(row[col.active] || ''),
+      match_type: String(row[col.match_type] || ''),
+      match_value: String(row[col.match_value] || ''),
+      delivery_url: String(row[col.delivery_url] || ''),
+      mail_subject: String(row[col.mail_subject] || ''),
+      mail_body_template: String(row[col.mail_body_template] || ''),
+      support_url: String(row[col.support_url] || ''),
+      notes: String(row[col.notes] || ''),
+    });
+  }
+  return products;
+}
+
+function findProductByKey_(products, productKey) {
+  for (var i = 0; i < products.length; i++) {
+    if (String(products[i].product_key) === String(productKey)) {
+      return products[i];
+    }
+  }
+  if (String(productKey) === 'proofpack_starter') {
+    return getProofPackFallbackProduct_('queued', productKey);
+  }
+  return null;
+}
+
+function buildProductSearchText_(payload, payment) {
+  const candidates = [
+    payment && payment.note,
+    payment && payment.order_id,
+    payment && payment.payment_link_id,
+    payment && payment.checkout_id,
+    payment && payment.receipt_number,
+    payment && payment.receipt_url,
+    payload && payload.merchant_id,
+    JSON.stringify(payload || {}),
+  ];
+  return candidates.filter(Boolean).join(' ').toLowerCase();
+}
+
+function getProofPackFallbackProduct_(matchType, matchValue) {
+  return {
+    product_key: 'proofpack_starter',
+    product_name: 'BRIDGE ProofPack Starter',
+    active: 'TRUE',
+    match_type: matchType || 'fallback',
+    match_value: matchValue || '',
+    delivery_url: '',
+    mail_subject: '',
+    mail_body_template: '',
+    support_url: '',
+    notes: 'Backward-compatible fallback for the existing ProofPack Starter delivery.',
+  };
+}
+
+function getUnknownProduct_() {
+  return {
+    product_key: 'UNKNOWN_PRODUCT',
+    product_name: '',
+    active: 'FALSE',
+    match_type: 'none',
+    match_value: '',
+    delivery_url: '',
+    mail_subject: '',
+    mail_body_template: '',
+    support_url: '',
+  };
+}
+
+function parseJsonSafe_(rawJson) {
+  try {
+    return JSON.parse(String(rawJson || '{}'));
+  } catch (err) {
+    return {};
+  }
+}
+
+function TEST_resolveProductFromSamplePayload() {
+  const payload = buildSampleSquarePaymentPayload_('payment-test-proofpack', 100, 'BRIDGE ProofPack Starter');
+  const product = resolveProductFromPayment_(payload, payload.data.object.payment, null);
+  return { ok: product.product_key === 'proofpack_starter', product: product };
+}
+
+function TEST_buildDeliveryMailByProduct() {
+  const product = {
+    product_key: 'estimate_front',
+    product_name: 'BRIDGE 見積前受付フロント',
+    mail_subject: '【納品】{{product_name}}',
+    mail_body_template: 'ご購入ありがとうございます。\n納品URL: {{delivery_url}}\nお問い合わせ: {{support_url}}',
+    delivery_url: 'https://example.com/estimate-front',
+    support_url: 'https://example.com/support',
+  };
+  const mail = buildDeliveryMailByProduct_(product, {
+    shopName: 'BRIDGE OS',
+    deliveryUrl: product.delivery_url,
+    supportFormUrl: product.support_url,
+    buyerEmail: 'buyer@example.com',
+    paymentId: 'payment-test-estimate',
+    eventId: 'event-test-estimate',
+  });
+  return { ok: mail.subject.indexOf(product.product_name) >= 0 && mail.body.indexOf(product.delivery_url) >= 0, mail: mail };
+}
+
+function TEST_processFulfillmentQueue_dryRun() {
+  return processFulfillmentQueue_({ dryRun: true });
+}
+
+function buildSampleSquarePaymentPayload_(paymentId, amount, note) {
+  return {
+    event_id: 'event-' + paymentId,
+    type: 'payment.updated',
+    data: {
+      object: {
+        payment: {
+          id: paymentId,
+          status: 'COMPLETED',
+          amount_money: { amount: amount, currency: 'JPY' },
+          buyer_email_address: 'buyer@example.com',
+          note: note,
+        },
+      },
+    },
+  };
+}
 
 function isProofPackExternalAiIntakePayload_(payload) {
   if (!payload) {
