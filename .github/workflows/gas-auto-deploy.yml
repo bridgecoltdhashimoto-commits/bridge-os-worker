@@ -1,0 +1,126 @@
+name: GAS Auto Deploy Guarded
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_webapp:
+        description: "既存WebアプリのDeployment IDを更新する"
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches:
+      - main
+    paths:
+      - "main.gs"
+      - "gas-deploy/**"
+      - ".github/workflows/gas-auto-deploy.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  gas-auto-deploy:
+    name: Push GAS code and guarded deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GAS_SCRIPT_ID: ${{ secrets.GAS_SCRIPT_ID }}
+      CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+      GAS_DEPLOYMENT_ID: ${{ secrets.GAS_DEPLOYMENT_ID }}
+      GAS_WEB_APP_URL: ${{ secrets.GAS_WEB_APP_URL }}
+      GAS_WEBHOOK_TOKEN: ${{ secrets.GAS_WEBHOOK_TOKEN }}
+      BRIDGE_NOTIFY_WEBHOOK_URL: ${{ secrets.BRIDGE_NOTIFY_WEBHOOK_URL }}
+      AUTO_DEPLOY_GAS_WEBAPP: ${{ vars.AUTO_DEPLOY_GAS_WEBAPP }}
+      DEPLOY_WEBAPP: ${{ (github.event_name == 'workflow_dispatch' && inputs.deploy_webapp == true) || (github.event_name == 'push' && vars.AUTO_DEPLOY_GAS_WEBAPP == 'true') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        run: |
+          set -eu
+          if [ -z "${GAS_SCRIPT_ID}" ]; then
+            echo "GAS_SCRIPT_ID secret is required."
+            exit 1
+          fi
+          if [ -z "${CLASPRC_JSON}" ]; then
+            echo "CLASPRC_JSON secret is required."
+            exit 1
+          fi
+          if [ "${DEPLOY_WEBAPP}" = "true" ] && [ -z "${GAS_DEPLOYMENT_ID}" ]; then
+            echo "GAS_DEPLOYMENT_ID secret is required when deploy_webapp is true."
+            exit 1
+          fi
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Prepare clasp credentials
+        run: |
+          set -eu
+          mkdir -p "$HOME"
+          printf '%s' "${CLASPRC_JSON}" > "$HOME/.clasprc.json"
+          test -s "$HOME/.clasprc.json"
+
+      - name: Prepare GAS push directory
+        run: |
+          set -eu
+          rm -rf .gas-push
+          mkdir -p .gas-push
+          cp main.gs .gas-push/main.gs
+          cp gas-deploy/appsscript.json .gas-push/appsscript.json
+          printf '{"scriptId":"%s","rootDir":"."}\n' "${GAS_SCRIPT_ID}" > .gas-push/.clasp.json
+          ls -la .gas-push
+
+      - name: Static check
+        run: |
+          set -eu
+          cp main.gs /tmp/main_check.js
+          node --check /tmp/main_check.js
+          node --check scripts/gas_smoke_test.js
+
+      - name: Push code to Apps Script HEAD
+        run: |
+          set -eu
+          cd .gas-push
+          npx --yes @google/clasp@latest push --force
+
+      - name: Update existing Web App deployment
+        if: env.DEPLOY_WEBAPP == 'true'
+        run: |
+          set -eu
+          cd .gas-push
+          npx --yes @google/clasp@latest deploy --deploymentId "${GAS_DEPLOYMENT_ID}" --description "GitHub Actions ${GITHUB_SHA}"
+
+      - name: Smoke test deployed GAS Web App
+        if: env.DEPLOY_WEBAPP == 'true' && env.GAS_WEB_APP_URL != ''
+        run: |
+          set -eu
+          node scripts/gas_smoke_test.js
+
+      - name: Write smartphone summary
+        if: always()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## BRIDGE OS GAS自動反映 結果
+
+          - 結果: ${{ job.status }}
+          - GAS反映: 実行
+          - Webアプリデプロイ更新: ${DEPLOY_WEBAPP}
+          - Smoke test: ${DEPLOY_WEBAPP}
+          - Commit: ${GITHUB_SHA}
+
+          スマホでは GitHub Actions の緑/赤チェックだけ確認してください。
+          EOF
+
+      - name: Optional external notification
+        if: always() && env.BRIDGE_NOTIFY_WEBHOOK_URL != ''
+        run: |
+          set -eu
+          STATUS="${{ job.status }}"
+          PAYLOAD=$(node -e "console.log(JSON.stringify({system:'BRIDGE OS', workflow:'GAS Auto Deploy Guarded', status: process.env.STATUS, deploy_webapp: process.env.DEPLOY_WEBAPP, repository: process.env.GITHUB_REPOSITORY, commit: process.env.GITHUB_SHA, run_url: process.env.GITHUB_SERVER_URL + '/' + process.env.GITHUB_REPOSITORY + '/actions/runs/' + process.env.GITHUB_RUN_ID}))")
+          curl -fsS -X POST "${BRIDGE_NOTIFY_WEBHOOK_URL}" -H "Content-Type: application/json" --data "${PAYLOAD}"
