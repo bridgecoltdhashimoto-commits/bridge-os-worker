@@ -21,8 +21,15 @@ product_key,product_name,active,match_type,match_value,delivery_url,mail_subject
 | `match_value` | `BRIDGE 見積前受付フロント` / `29800` | 判定に使う値。`amount` の場合はSquareの最小通貨単位（JPYなら円）。 |
 | `delivery_url` | 納品URL | 商品別の納品URL。ProofPack Starterの後方互換ではScript Propertiesの `DELIVERY_URL` も使えます。 |
 | `mail_subject` | `【納品】{{product_name}}` | `{{product_name}}` などのプレースホルダーが使用可能。 |
-| `mail_body_template` | `納品URL: {{delivery_url}}` | 商品別本文。空なら汎用本文、ProofPack Starterは既存本文。 |
+| `mail_body_template` | `納品URL: {{delivery_url}}` | 商品別本文。空なら汎用本文、ProofPack Starterは既存本文。`estimate_front` は購入者向け納品パッケージ用の標準本文を使用。 |
 | `support_url` | サポートURL | 商品別サポートURL。空なら `SUPPORT_FORM_URL` を使用。 |
+
+
+## 見積前受付フロントの納品パッケージ
+
+`product_key=estimate_front` かつ `mail_subject` / `mail_body_template` が空の場合、GASは `BRIDGE 見積前受付フロント` 購入者向けの標準納品メールを生成します。本文には、`docs/products/estimate-front-delivery/` 配下の納品物一覧、初回設定手順、本番公開前のテスト確認、Square決済リンクや本番メール送信は内容確認後に切り替える旨を含めます。
+
+`Product_Master` へ追加するサンプル行は、`docs/products/estimate-front-delivery/Product_Master_見積前受付フロント_sample.csv` を参照してください。実運用時は `delivery_url` と `support_url` を実際の納品先・窓口に差し替えますが、このPRでは本番設定変更は行いません。
 
 ## Square側の商品識別値
 
