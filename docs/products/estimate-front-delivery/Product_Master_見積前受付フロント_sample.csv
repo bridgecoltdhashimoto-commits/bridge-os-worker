@@ -1,0 +1,2 @@
+product_key,product_name,active,match_type,match_value,delivery_url,mail_subject,mail_body_template,support_url,notes
+estimate_front,BRIDGE 見積前受付フロント,TRUE,product_name,BRIDGE 見積前受付フロント,https://example.com/estimate-front-delivery,【納品】{{product_name}} ご購入ありがとうございます,,https://example.com/support,見積前受付フロント購入者向け納品パッケージ。実運用前にdelivery_url/support_urlを差し替える。

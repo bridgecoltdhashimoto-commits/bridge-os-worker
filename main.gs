@@ -488,6 +488,10 @@ function buildDeliveryMailByProduct_(product, context) {
     return buildDeliveryMail_(context && context.shopName, deliveryUrl, supportFormUrl);
   }
 
+  if (productKey === 'estimate_front' && !subjectTemplate && !bodyTemplate) {
+    return buildEstimateFrontDeliveryMail_(productName, deliveryUrl, supportFormUrl);
+  }
+
   const tokens = {
     shop_name: String(context && context.shopName ? context.shopName : 'BRIDGE OS'),
     product_key: productKey,
@@ -503,6 +507,42 @@ function buildDeliveryMailByProduct_(product, context) {
     ? applyTemplate_(bodyTemplate, tokens)
     : buildGenericDeliveryMailBody_(tokens);
   return { subject: subject, body: body };
+}
+
+function buildEstimateFrontDeliveryMail_(productName, deliveryUrl, supportFormUrl) {
+  const safeProductName = productName || 'BRIDGE 見積前受付フロント';
+  const subject = '【納品】' + safeProductName + ' ご購入ありがとうございます';
+  const lines = [
+    'このたびは「' + safeProductName + '」をご購入いただき、誠にありがとうございます。',
+    '',
+    '以下URLより、購入者向け納品パッケージをご確認ください。',
+    '納品URL: ' + deliveryUrl,
+    '',
+    '【納品パッケージ内容】',
+    '01_導入チェックリスト',
+    '02_受付フォーム項目テンプレート',
+    '03_自動返信テンプレート',
+    '04_運用ルール_免責',
+    'Product_Master_見積前受付フロント_sample.csv',
+    '',
+    '【初回設定の流れ】',
+    'STEP1: 導入チェックリストで事業者名、対応エリア、返信目安、予約金/着手金の方針を確認してください。',
+    'STEP2: 受付フォーム項目テンプレートから、自社に必要な質問だけを選んでください。',
+    'STEP3: 自動返信テンプレートを自社の営業時間、返信目安、注意事項に合わせて調整してください。',
+    'STEP4: 本番公開前に、必ずテストモードまたは下書き確認で送信内容を確認してください。',
+    '',
+    '【ご案内】',
+    '・本商品は、見積前の受付導線と情報整理を補助するデジタルコンテンツです。',
+    '・工事可否、見積金額、契約条件、法律・税務判断は提供しておりません。',
+    '・Square決済リンクや本番メール送信は、内容確認後に購入者または運用担当者が設定してください。',
+    '・既存のBRIDGE ProofPack Starterとは別商品の納品パッケージです。',
+    '',
+    '発行元: 株式会社BRIDGE',
+  ];
+  if (supportFormUrl) {
+    lines.push('納品不備のご連絡窓口: ' + supportFormUrl);
+  }
+  return { subject: subject, body: lines.join('\n') };
 }
 
 function buildGenericDeliveryMailBody_(tokens) {
