@@ -3,6 +3,16 @@ name = 'bridge-os-worker'
 main = "index.js"
 compatibility_date = "2024-03-07"
 
+[[rules]]
+type = "Text"
+globs = [ "**/*.html" ]
+fallthrough = true
+
+[[rules]]
+type = "Text"
+globs = [ "**/*.css" ]
+fallthrough = true
+
 # DedupeObject を完全に削除するための命令
 [[migrations]]
 tag = "v2"
