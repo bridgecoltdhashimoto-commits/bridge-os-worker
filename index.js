@@ -1,5 +1,15 @@
+import estimateFrontHtml from "./products/estimate-front/index.html";
+import estimateFrontCss from "./products/estimate-front/style.css";
+
+const ESTIMATE_FRONT_BASE_PATH = "/products/estimate-front";
+
 export default {
   async fetch(request, env) {
+    const estimateFrontResponse = handleEstimateFrontRequest(request);
+    if (estimateFrontResponse) {
+      return estimateFrontResponse;
+    }
+
     if (request.method !== "POST") {
       return new Response("BRIDGE OS ACTIVE", { status: 200 });
     }
@@ -44,6 +54,40 @@ export default {
     }
   },
 };
+
+function handleEstimateFrontRequest(request) {
+  if (!["GET", "HEAD"].includes(request.method)) {
+    return null;
+  }
+
+  const url = new URL(request.url);
+  const pathname = url.pathname;
+
+  if (pathname === ESTIMATE_FRONT_BASE_PATH) {
+    url.pathname = `${ESTIMATE_FRONT_BASE_PATH}/`;
+    return Response.redirect(url.toString(), 308);
+  }
+
+  if (pathname === `${ESTIMATE_FRONT_BASE_PATH}/` || pathname === `${ESTIMATE_FRONT_BASE_PATH}/index.html`) {
+    return buildStaticResponse(request, estimateFrontHtml, "text/html; charset=utf-8");
+  }
+
+  if (pathname === `${ESTIMATE_FRONT_BASE_PATH}/style.css`) {
+    return buildStaticResponse(request, estimateFrontCss, "text/css; charset=utf-8");
+  }
+
+  return null;
+}
+
+function buildStaticResponse(request, body, contentType) {
+  return new Response(request.method === "HEAD" ? null : body, {
+    status: 200,
+    headers: {
+      "Cache-Control": "public, max-age=300",
+      "Content-Type": contentType,
+    },
+  });
+}
 
 function extractProofPackIntakeSource(urlText) {
   const url = new URL(urlText);
