@@ -59,19 +59,19 @@ body.ef-page {
 .ef-section h2 {
   margin: 0;
   line-height: 1.25;
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
 }
 
 .ef-hero h1 {
   max-width: 760px;
-  font-size: clamp(2rem, 10vw, 4.6rem);
+  font-size: 2.35rem;
 }
 
 .ef-lead {
   max-width: 720px;
   margin: 22px 0 0;
   color: rgba(255, 255, 255, 0.9);
-  font-size: clamp(1rem, 4vw, 1.2rem);
+  font-size: 1rem;
 }
 
 .ef-actions {
@@ -136,7 +136,7 @@ body.ef-page {
 
 .ef-section h2 {
   color: var(--ef-navy-deep);
-  font-size: clamp(1.65rem, 7vw, 2.7rem);
+  font-size: 1.75rem;
 }
 
 .ef-card-grid,
@@ -367,8 +367,20 @@ body.ef-page {
     padding: 96px 0 72px;
   }
 
+  .ef-hero h1 {
+    font-size: 4rem;
+  }
+
+  .ef-lead {
+    font-size: 1.2rem;
+  }
+
   .ef-actions {
     flex-direction: row;
+  }
+
+  .ef-section h2 {
+    font-size: 2.55rem;
   }
 
   .ef-card-grid,
