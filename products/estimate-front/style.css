@@ -123,11 +123,35 @@ body.ef-page {
   text-decoration: none;
 }
 
-.ef-brand__name {
+.ef-brand__mark {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border: 1px solid rgba(236, 212, 154, 0.72);
+  border-radius: 14px;
+  background: linear-gradient(145deg, var(--ef-gold-300), var(--ef-gold-500));
+  box-shadow: 0 10px 24px rgba(205, 168, 94, 0.2), inset 0 1px rgba(255, 255, 255, 0.45);
+  color: var(--ef-navy-950);
+  font-size: 1.35rem;
+  font-weight: 900;
+  letter-spacing: -0.08em;
+  line-height: 1;
+}
+
+.ef-brand__text {
+  display: grid;
+  gap: 2px;
+}
+
+.ef-brand__company {
   color: var(--ef-gold-300);
-  font-size: 1.15rem;
+  font-size: 0.86rem;
   font-weight: 900;
   letter-spacing: 0.12em;
+  line-height: 1.3;
 }
 
 .ef-brand__description,
@@ -136,6 +160,13 @@ body.ef-page {
   font-size: 0.78rem;
   font-weight: 700;
   letter-spacing: 0.08em;
+}
+
+.ef-brand-row__company {
+  padding: 7px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .ef-hero__grid {
@@ -158,15 +189,16 @@ body.ef-page {
   align-items: center;
   gap: 11px;
   margin: 0 0 24px;
-  padding: 12px 18px;
+  padding: 11px 18px 12px;
   border: 1px solid rgba(236, 212, 154, 0.5);
   border-radius: 999px;
   background: linear-gradient(135deg, rgba(205, 168, 94, 0.22), rgba(205, 168, 94, 0.09));
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.14), inset 0 1px rgba(255, 255, 255, 0.12);
   color: var(--ef-gold-300);
-  font-size: 1rem;
+  font-size: 1.03rem;
   font-weight: 900;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
+  line-height: 1.35;
 }
 
 .ef-hero-badge__dot {
@@ -175,6 +207,15 @@ body.ef-page {
   border-radius: 50%;
   background: var(--ef-gold-400);
   box-shadow: 0 0 0 6px rgba(218, 187, 119, 0.12);
+}
+
+.ef-hero-badge strong {
+  display: block;
+  margin-bottom: 1px;
+  color: rgba(255, 255, 255, 0.68);
+  font-size: 0.62rem;
+  letter-spacing: 0.2em;
+  line-height: 1.3;
 }
 
 .ef-hero__kicker {
@@ -193,6 +234,10 @@ body.ef-page {
   font-weight: 900;
   letter-spacing: -0.045em;
   line-height: 1.16;
+}
+
+.ef-nowrap {
+  white-space: nowrap;
 }
 
 .ef-hero__lead {
@@ -368,6 +413,35 @@ body.ef-page {
   background: radial-gradient(circle, rgba(236, 212, 154, 0.2), transparent 68%);
   content: "";
   pointer-events: none;
+}
+
+.ef-hero-visual__brand {
+  position: absolute;
+  top: 22px;
+  left: 24px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(236, 212, 154, 0.72);
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0.18em;
+  line-height: 1;
+}
+
+.ef-hero-visual__brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(236, 212, 154, 0.42);
+  border-radius: 9px;
+  background: rgba(205, 168, 94, 0.08);
+  color: var(--ef-gold-300);
+  font-size: 0.9rem;
+  letter-spacing: -0.08em;
 }
 
 .ef-hero-visual__art {
@@ -965,6 +1039,27 @@ body.ef-page {
   gap: 18px;
 }
 
+.ef-footer__brand-lockup {
+  display: inline-flex;
+  align-items: center;
+  gap: 11px;
+}
+
+.ef-footer__mark {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(236, 212, 154, 0.38);
+  border-radius: 9px;
+  color: var(--ef-gold-300);
+  font-size: 0.9rem;
+  font-weight: 900;
+  letter-spacing: -0.08em;
+}
+
 .ef-footer p {
   margin: 0;
   font-size: 0.76rem;
@@ -1089,8 +1184,16 @@ body.ef-page {
     gap: 9px;
   }
 
-  .ef-brand__name {
-    font-size: 1rem;
+  .ef-brand__mark {
+    width: 36px;
+    height: 36px;
+    border-radius: 12px;
+    font-size: 1.12rem;
+  }
+
+  .ef-brand__company {
+    font-size: 0.74rem;
+    letter-spacing: 0.08em;
   }
 
   .ef-brand__description {
@@ -1114,9 +1217,14 @@ body.ef-page {
 
   .ef-hero-badge {
     margin-bottom: 20px;
-    padding: 11px 14px;
+    padding: 10px 14px 11px;
     font-size: 0.88rem;
     letter-spacing: 0.04em;
+  }
+
+  .ef-hero-badge strong {
+    font-size: 0.56rem;
+    letter-spacing: 0.16em;
   }
 
   .ef-hero__kicker {
@@ -1175,6 +1283,20 @@ body.ef-page {
 
   .ef-hero-visual__card {
     border-radius: 22px;
+  }
+
+  .ef-hero-visual__brand {
+    top: 15px;
+    left: 15px;
+    gap: 6px;
+    font-size: 0.58rem;
+  }
+
+  .ef-hero-visual__brand-mark {
+    width: 24px;
+    height: 24px;
+    border-radius: 8px;
+    font-size: 0.76rem;
   }
 
   .ef-hero-visual__art {
@@ -1416,6 +1538,10 @@ body.ef-page {
   .ef-footer__inner {
     display: grid;
     gap: 3px;
+  }
+
+  .ef-footer__brand-lockup {
+    gap: 9px;
   }
 
   .ef-footer__copyright {
