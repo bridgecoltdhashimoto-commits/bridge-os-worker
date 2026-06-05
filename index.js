@@ -3,6 +3,22 @@ import estimateFrontCss from "./products/estimate-front/style.css";
 import bridgeLogoJpg from "./products/estimate-front/assets/bridge-logo.jpg";
 
 const ESTIMATE_FRONT_BASE_PATH = "/products/estimate-front";
+const estimateFrontCssWithLogoImageFit = `${estimateFrontCss}
+
+.ef-brand__mark,
+.ef-footer__mark {
+  overflow: hidden;
+  border-radius: 999px;
+}
+
+.ef-brand__mark img,
+.ef-footer__mark img {
+  border-radius: inherit;
+  object-fit: cover;
+  object-position: center;
+  filter: contrast(1.12) saturate(1.08) drop-shadow(0 8px 18px rgba(218, 187, 119, 0.24));
+}
+`;
 
 export default {
   async fetch(request, env) {
@@ -74,7 +90,7 @@ function handleEstimateFrontRequest(request) {
   }
 
   if (pathname === `${ESTIMATE_FRONT_BASE_PATH}/style.css`) {
-    return buildStaticResponse(request, estimateFrontCss, "text/css; charset=utf-8");
+    return buildStaticResponse(request, estimateFrontCssWithLogoImageFit, "text/css; charset=utf-8");
   }
 
   if (
