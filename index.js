@@ -1,55 +1,8 @@
 import estimateFrontHtml from "./products/estimate-front/index.html";
 import estimateFrontCss from "./products/estimate-front/style.css";
-import bridgeLogoJpg from "./products/estimate-front/assets/bridge-logo.jpg";
+import bridgeLogoPng from "./products/estimate-front/assets/bridge-logo.png";
 
 const ESTIMATE_FRONT_BASE_PATH = "/products/estimate-front";
-const ESTIMATE_FRONT_ASSET_VERSION = "official-logo-20260605c";
-const ESTIMATE_FRONT_LOGO_DISPLAY_CSS = `
-.ef-brand__mark {
-  width: 60px;
-  height: 55px;
-  padding: 1px;
-}
-
-.ef-brand__mark img,
-.ef-hero-visual__brand-mark img,
-.ef-footer__mark img {
-  width: 128%;
-  height: 128%;
-  object-fit: contain;
-  filter: contrast(1.55) saturate(1.4);
-  transform: scale(1.85);
-}
-
-.ef-hero-visual__brand-mark img {
-  width: 132%;
-  height: 132%;
-}
-
-.ef-hero-visual__brand-mark {
-  width: 38px;
-  height: 35px;
-  padding: 1px;
-}
-
-.ef-footer__mark {
-  width: 36px;
-  height: 33px;
-  padding: 1px;
-}
-
-@media (max-width: 640px) {
-  .ef-brand__mark {
-    width: 52px;
-    height: 48px;
-  }
-
-  .ef-hero-visual__brand-mark {
-    width: 32px;
-    height: 29px;
-  }
-}
-`;
 
 export default {
   async fetch(request, env) {
@@ -117,31 +70,18 @@ function handleEstimateFrontRequest(request) {
   }
 
   if (pathname === `${ESTIMATE_FRONT_BASE_PATH}/` || pathname === `${ESTIMATE_FRONT_BASE_PATH}/index.html`) {
-    return buildStaticResponse(request, buildEstimateFrontHtml(), "text/html; charset=utf-8");
+    return buildStaticResponse(request, estimateFrontHtml, "text/html; charset=utf-8");
   }
 
   if (pathname === `${ESTIMATE_FRONT_BASE_PATH}/style.css`) {
-    return buildStaticResponse(
-      request,
-      `${estimateFrontCss}\n${ESTIMATE_FRONT_LOGO_DISPLAY_CSS}`,
-      "text/css; charset=utf-8",
-    );
+    return buildStaticResponse(request, estimateFrontCss, "text/css; charset=utf-8");
   }
 
-  if (pathname === `${ESTIMATE_FRONT_BASE_PATH}/assets/bridge-logo.jpg`) {
-    return buildStaticResponse(request, bridgeLogoJpg, "image/jpeg");
+  if (pathname === `${ESTIMATE_FRONT_BASE_PATH}/assets/bridge-logo.png`) {
+    return buildStaticResponse(request, bridgeLogoPng, "image/png");
   }
 
   return null;
-}
-
-function buildEstimateFrontHtml() {
-  return estimateFrontHtml
-    .replace('href="./style.css"', `href="./style.css?v=${ESTIMATE_FRONT_ASSET_VERSION}"`)
-    .replaceAll(
-      'src="./assets/bridge-logo.jpg"',
-      `src="./assets/bridge-logo.jpg?v=${ESTIMATE_FRONT_ASSET_VERSION}"`,
-    );
 }
 
 function buildStaticResponse(request, body, contentType) {

@@ -128,14 +128,8 @@ body.ef-page {
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  width: 46px;
-  height: 42px;
-  padding: 3px;
-  overflow: hidden;
-  border: 1px solid rgba(236, 212, 154, 0.5);
-  border-radius: 13px;
-  background: #fff;
-  box-shadow: 0 10px 24px rgba(205, 168, 94, 0.2);
+  width: 48px;
+  height: 48px;
 }
 
 .ef-brand__mark img {
@@ -143,6 +137,7 @@ body.ef-page {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  filter: drop-shadow(0 6px 14px rgba(218, 187, 119, 0.24));
 }
 
 .ef-brand__text {
@@ -432,26 +427,6 @@ body.ef-page {
   font-weight: 900;
   letter-spacing: 0.18em;
   line-height: 1;
-}
-
-.ef-hero-visual__brand-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 31px;
-  height: 28px;
-  padding: 2px;
-  overflow: hidden;
-  border: 1px solid rgba(236, 212, 154, 0.42);
-  border-radius: 8px;
-  background: #fff;
-}
-
-.ef-hero-visual__brand-mark img {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
 }
 
 .ef-hero-visual__art {
@@ -1060,13 +1035,8 @@ body.ef-page {
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  width: 33px;
+  width: 30px;
   height: 30px;
-  padding: 2px;
-  overflow: hidden;
-  border: 1px solid rgba(236, 212, 154, 0.38);
-  border-radius: 8px;
-  background: #fff;
 }
 
 .ef-footer__mark img {
@@ -1074,6 +1044,7 @@ body.ef-page {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  filter: drop-shadow(0 4px 10px rgba(218, 187, 119, 0.22));
 }
 
 .ef-footer p {
@@ -1201,9 +1172,8 @@ body.ef-page {
   }
 
   .ef-brand__mark {
-    width: 40px;
-    height: 36px;
-    border-radius: 11px;
+    width: 42px;
+    height: 42px;
   }
 
   .ef-brand__company {
@@ -1305,12 +1275,6 @@ body.ef-page {
     left: 15px;
     gap: 6px;
     font-size: 0.58rem;
-  }
-
-  .ef-hero-visual__brand-mark {
-    width: 27px;
-    height: 24px;
-    border-radius: 7px;
   }
 
   .ef-hero-visual__art {

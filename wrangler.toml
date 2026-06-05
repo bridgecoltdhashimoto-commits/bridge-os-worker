@@ -15,7 +15,7 @@ fallthrough = true
 
 [[rules]]
 type = "Data"
-globs = [ "**/*.jpg", "**/*.jpeg" ]
+globs = [ "**/*.jpg", "**/*.jpeg", "**/*.png" ]
 fallthrough = true
 
 # DedupeObject を完全に削除するための命令
