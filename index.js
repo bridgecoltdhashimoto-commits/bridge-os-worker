@@ -5,8 +5,8 @@ import bridgeLogoJpg from "./products/estimate-front/assets/bridge-logo.jpg";
 const ESTIMATE_FRONT_BASE_PATH = "/products/estimate-front";
 const ESTIMATE_FRONT_LOGO_DISPLAY_CSS = `
 .ef-brand__mark {
-  width: 52px;
-  height: 48px;
+  width: 60px;
+  height: 55px;
   padding: 1px;
 }
 
@@ -14,11 +14,12 @@ const ESTIMATE_FRONT_LOGO_DISPLAY_CSS = `
 .ef-hero-visual__brand-mark img,
 .ef-footer__mark img {
   object-fit: cover;
+  filter: contrast(1.22) saturate(1.18);
 }
 
 .ef-hero-visual__brand-mark {
-  width: 34px;
-  height: 31px;
+  width: 38px;
+  height: 35px;
   padding: 1px;
 }
 
@@ -30,13 +31,13 @@ const ESTIMATE_FRONT_LOGO_DISPLAY_CSS = `
 
 @media (max-width: 640px) {
   .ef-brand__mark {
-    width: 44px;
-    height: 40px;
+    width: 52px;
+    height: 48px;
   }
 
   .ef-hero-visual__brand-mark {
-    width: 27px;
-    height: 24px;
+    width: 32px;
+    height: 29px;
   }
 }
 `;
