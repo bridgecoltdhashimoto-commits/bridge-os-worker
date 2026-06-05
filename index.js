@@ -1,5 +1,6 @@
 import estimateFrontHtml from "./products/estimate-front/index.html";
 import estimateFrontCss from "./products/estimate-front/style.css";
+import bridgeLogoJpg from "./products/estimate-front/assets/bridge-logo.jpg";
 
 const ESTIMATE_FRONT_BASE_PATH = "/products/estimate-front";
 
@@ -74,6 +75,10 @@ function handleEstimateFrontRequest(request) {
 
   if (pathname === `${ESTIMATE_FRONT_BASE_PATH}/style.css`) {
     return buildStaticResponse(request, estimateFrontCss, "text/css; charset=utf-8");
+  }
+
+  if (pathname === `${ESTIMATE_FRONT_BASE_PATH}/assets/bridge-logo.jpg`) {
+    return buildStaticResponse(request, bridgeLogoJpg, "image/jpeg");
   }
 
   return null;
