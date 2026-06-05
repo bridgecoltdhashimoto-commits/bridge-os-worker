@@ -3,6 +3,43 @@ import estimateFrontCss from "./products/estimate-front/style.css";
 import bridgeLogoJpg from "./products/estimate-front/assets/bridge-logo.jpg";
 
 const ESTIMATE_FRONT_BASE_PATH = "/products/estimate-front";
+const ESTIMATE_FRONT_LOGO_DISPLAY_CSS = `
+.ef-brand__mark {
+  width: 52px;
+  height: 48px;
+  padding: 1px;
+}
+
+.ef-brand__mark img,
+.ef-hero-visual__brand-mark img,
+.ef-footer__mark img {
+  object-fit: cover;
+}
+
+.ef-hero-visual__brand-mark {
+  width: 34px;
+  height: 31px;
+  padding: 1px;
+}
+
+.ef-footer__mark {
+  width: 36px;
+  height: 33px;
+  padding: 1px;
+}
+
+@media (max-width: 640px) {
+  .ef-brand__mark {
+    width: 44px;
+    height: 40px;
+  }
+
+  .ef-hero-visual__brand-mark {
+    width: 27px;
+    height: 24px;
+  }
+}
+`;
 
 export default {
   async fetch(request, env) {
@@ -74,7 +111,11 @@ function handleEstimateFrontRequest(request) {
   }
 
   if (pathname === `${ESTIMATE_FRONT_BASE_PATH}/style.css`) {
-    return buildStaticResponse(request, estimateFrontCss, "text/css; charset=utf-8");
+    return buildStaticResponse(
+      request,
+      `${estimateFrontCss}\n${ESTIMATE_FRONT_LOGO_DISPLAY_CSS}`,
+      "text/css; charset=utf-8",
+    );
   }
 
   if (pathname === `${ESTIMATE_FRONT_BASE_PATH}/assets/bridge-logo.jpg`) {
