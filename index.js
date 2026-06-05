@@ -1,22 +1,12 @@
 import estimateFrontHtml from "./products/estimate-front/index.html";
 import estimateFrontCss from "./products/estimate-front/style.css";
-import bridgeLogoJpg from "./products/estimate-front/assets/bridge-logo.jpg";
 
 const ESTIMATE_FRONT_BASE_PATH = "/products/estimate-front";
-const estimateFrontCssWithLogoImageFit = `${estimateFrontCss}
+const estimateFrontCssWithoutLogoImage = `${estimateFrontCss}
 
 .ef-brand__mark,
 .ef-footer__mark {
-  overflow: hidden;
-  border-radius: 999px;
-}
-
-.ef-brand__mark img,
-.ef-footer__mark img {
-  border-radius: inherit;
-  object-fit: cover;
-  object-position: center;
-  filter: contrast(1.12) saturate(1.08) drop-shadow(0 8px 18px rgba(218, 187, 119, 0.24));
+  display: none !important;
 }
 `;
 
@@ -90,14 +80,7 @@ function handleEstimateFrontRequest(request) {
   }
 
   if (pathname === `${ESTIMATE_FRONT_BASE_PATH}/style.css`) {
-    return buildStaticResponse(request, estimateFrontCssWithLogoImageFit, "text/css; charset=utf-8");
-  }
-
-  if (
-    pathname === `${ESTIMATE_FRONT_BASE_PATH}/assets/bridge-logo.jpg` ||
-    pathname === `${ESTIMATE_FRONT_BASE_PATH}/assets/bridge-logo.png`
-  ) {
-    return buildStaticResponse(request, bridgeLogoJpg, "image/jpeg");
+    return buildStaticResponse(request, estimateFrontCssWithoutLogoImage, "text/css; charset=utf-8");
   }
 
   return null;
