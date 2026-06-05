@@ -13,11 +13,6 @@ type = "Text"
 globs = [ "**/*.css" ]
 fallthrough = true
 
-[[rules]]
-type = "Data"
-globs = [ "**/*.jpg", "**/*.jpeg" ]
-fallthrough = true
-
 # DedupeObject を完全に削除するための命令
 [[migrations]]
 tag = "v2"
