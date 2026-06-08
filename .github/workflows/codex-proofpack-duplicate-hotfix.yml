@@ -1,0 +1,466 @@
+name: Codex ProofPack duplicate hotfix
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/codex-proofpack-duplicate-hotfix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-hotfix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Apply verified main.gs patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_parent="5278fabecc4a06af346c28e51b3251d47f6de95e"
+          actual_parent="$(git rev-parse HEAD^)"
+          if [ "$actual_parent" != "$expected_parent" ]; then
+            echo "Unexpected parent commit: $actual_parent"
+            exit 1
+          fi
+          cat > /tmp/proofpack-duplicate-hotfix.patch <<'PATCH'
+--- a/main.gs
++++ b/main.gs
+@@ -4,14 +4,20 @@
+  * Stage 3: Fulfillment Queue placeholder processing
+  */
+ function doPost(e) {
+-  const props = PropertiesService.getScriptProperties();
+-  const expectedToken = props.getProperty('WEBHOOK_TOKEN');
+-  const adminEmail = props.getProperty('ADMIN_EMAIL');
+-  const ss = getSpreadsheet_();
+-  const sheets = ensureSystemSheets_(ss);
+-  const logSheet = sheets.squareLogs;
+-
++  const lock = LockService.getScriptLock();
++  if (!lock.tryLock(30000)) {
++    return jsonResponse_({ ok: false, reason: 'lock_not_acquired' });
++  }
++
++  let logSheet = null;
+   try {
++    const props = PropertiesService.getScriptProperties();
++    const expectedToken = props.getProperty('WEBHOOK_TOKEN');
++    const adminEmail = props.getProperty('ADMIN_EMAIL');
++    const ss = getSpreadsheet_();
++    const sheets = ensureSystemSheets_(ss);
++    logSheet = sheets.squareLogs;
++
+     const receivedToken = (e && e.parameter && e.parameter.token) ? e.parameter.token : '';
+     if (!expectedToken || receivedToken !== expectedToken) {
+       logSheet.appendRow([new Date(), 'UNAUTHORIZED', '', '', '', 'invalid token']);
+@@ -46,7 +52,7 @@
+       return jsonResponse_({ ok: true, status: 'ignored', reason: 'non_completed_payment' });
+     }
+ 
+-    if (paymentId && isPaymentIdAlreadyLogged_(logSheet, paymentId)) {
++    if (paymentId && isPaymentIdAlreadyReceivedOrQueuedOrSent_(sheets, paymentId)) {
+       return jsonResponse_({ ok: true, status: 'ignored', reason: 'duplicate_payment_id' });
+     }
+ 
+@@ -73,8 +79,12 @@
+ 
+     return jsonResponse_({ ok: true, status: 'recorded' });
+   } catch (err) {
+-    logSheet.appendRow([new Date(), 'ERROR', '', '', '', String(err && err.message ? err.message : err)]);
++    if (logSheet) {
++      logSheet.appendRow([new Date(), 'ERROR', '', '', '', String(err && err.message ? err.message : err)]);
++    }
+     return jsonResponse_({ ok: false, reason: String(err && err.message ? err.message : err) });
++  } finally {
++    lock.releaseLock();
+   }
+ }
+ 
+@@ -128,20 +138,83 @@
+ }
+ 
+ function isPaymentIdAlreadyLogged_(sheet, paymentId) {
+-  const lastRow = sheet.getLastRow();
+-  if (lastRow <= 1) {
++  return isPaymentIdExistsInSquareLogs_(sheet, paymentId);
++}
++
++function isPaymentIdExistsInSquareLogs_(sheet, paymentId) {
++  return isPaymentIdExistsInSheetColumn_(sheet, paymentId, 'Payment ID', 5);
++}
++
++function isPaymentIdExistsInQueue_(queueSheet, paymentId) {
++  return isPaymentIdExistsInSheetColumn_(queueSheet, paymentId, 'payment_id', 3);
++}
++
++function isPaymentIdAlreadySent_(fulfillmentLogSheet, paymentId) {
++  if (!paymentId || !fulfillmentLogSheet || fulfillmentLogSheet.getLastRow() <= 1) {
+     return false;
+   }
+ 
+-  const paymentIdValues = sheet.getRange(2, 5, lastRow - 1, 1).getValues();
+-  return paymentIdValues.some(function (row) {
+-    return row[0] === paymentId;
++  const lastRow = fulfillmentLogSheet.getLastRow();
++  const lastColumn = fulfillmentLogSheet.getLastColumn();
++  const paymentIdColumn = getHeaderColumnNumber_(fulfillmentLogSheet, 'payment_id', 2);
++  const statusColumn = getHeaderColumnNumber_(fulfillmentLogSheet, 'status', 8);
++  if (!paymentIdColumn || !statusColumn) {
++    return false;
++  }
++
++  const values = fulfillmentLogSheet.getRange(2, 1, lastRow - 1, lastColumn).getValues();
++  const targetPaymentId = String(paymentId);
++  return values.some(function (row) {
++    return String(row[paymentIdColumn - 1] || '') === targetPaymentId &&
++      String(row[statusColumn - 1] || '').toUpperCase() === 'SENT';
+   });
++}
++
++function isPaymentIdAlreadyReceivedOrQueuedOrSent_(sheets, paymentId) {
++  if (!paymentId || !sheets) {
++    return false;
++  }
++  return isPaymentIdExistsInSquareLogs_(sheets.squareLogs, paymentId) ||
++    isPaymentIdExistsInQueue_(sheets.queue, paymentId) ||
++    isPaymentIdAlreadySent_(sheets.fulfillmentLog, paymentId);
++}
++
++function isPaymentIdExistsInSheetColumn_(sheet, paymentId, headerName, fallbackColumn) {
++  if (!paymentId || !sheet || sheet.getLastRow() <= 1) {
++    return false;
++  }
++
++  const columnNumber = getHeaderColumnNumber_(sheet, headerName, fallbackColumn);
++  if (!columnNumber) {
++    return false;
++  }
++
++  const targetPaymentId = String(paymentId);
++  const values = sheet.getRange(2, columnNumber, sheet.getLastRow() - 1, 1).getValues();
++  return values.some(function (row) {
++    return String(row[0] || '') === targetPaymentId;
++  });
++}
++
++function getHeaderColumnNumber_(sheet, headerName, fallbackColumn) {
++  if (!sheet || sheet.getLastColumn() <= 0) {
++    return 0;
++  }
++
++  const lastColumn = sheet.getLastColumn();
++  const headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
++  for (var i = 0; i < headers.length; i++) {
++    if (String(headers[i]) === String(headerName)) {
++      return i + 1;
++    }
++  }
++
++  return fallbackColumn && fallbackColumn <= lastColumn ? fallbackColumn : 0;
+ }
+ 
+ function appendQueueIfNotExists_(queueSheet, eventId, paymentId, buyerEmail, amount, currency, rawData, product) {
+   if (paymentId && isPaymentIdExistsInQueue_(queueSheet, paymentId)) {
+-    return;
++    return false;
+   }
+ 
+   const now = new Date();
+@@ -162,17 +235,7 @@
+     match_type: product && product.match_type ? product.match_type : '',
+     match_value: product && product.match_value ? product.match_value : '',
+   });
+-}
+-
+-function isPaymentIdExistsInQueue_(queueSheet, paymentId) {
+-  const lastRow = queueSheet.getLastRow();
+-  if (lastRow <= 1) {
+-    return false;
+-  }
+-  const values = queueSheet.getRange(2, 3, lastRow - 1, 1).getValues();
+-  return values.some(function (row) {
+-    return row[0] === paymentId;
+-  });
++  return true;
+ }
+ 
+ function appendEvidence_(evidenceSheet, eventId, paymentId, rawData) {
+@@ -225,6 +288,7 @@
+ 
+ function processFulfillmentQueue_(options) {
+   const dryRun = !!(options && options.dryRun);
++  const onlyPaymentId = options && options.onlyPaymentId ? String(options.onlyPaymentId) : '';
+   const lock = LockService.getScriptLock();
+   if (!lock.tryLock(30000)) {
+     return { ok: false, reason: 'lock_not_acquired' };
+@@ -257,6 +321,11 @@
+       const buyerEmail = String(row[col.buyer_email] || '');
+       const rawJson = String(row[col.raw_json] || '');
+ 
++      if (onlyPaymentId && paymentId !== onlyPaymentId) {
++        skipped++;
++        continue;
++      }
++
+       if (status !== 'ENQUEUED') {
+         skipped++;
+         continue;
+@@ -267,6 +336,12 @@
+         if (!dryRun) {
+           setCellByHeader_(queueSheet, sheetRow, col, 'status', 'PROCESSING');
+           setCellByHeader_(queueSheet, sheetRow, col, 'updated_at', startedAt);
++        }
++
++        if (!dryRun && paymentId && isPaymentIdAlreadySent_(logSheet, paymentId)) {
++          markQueueRowDuplicateSkipped_(queueSheet, sheetRow, col);
++          skipped++;
++          continue;
+         }
+ 
+         const payload = parseJsonSafe_(rawJson);
+@@ -298,6 +373,11 @@
+         });
+         if (dryRun) {
+           processed++;
++          continue;
++        }
++        if (paymentId && isPaymentIdAlreadySent_(logSheet, paymentId)) {
++          markQueueRowDuplicateSkipped_(queueSheet, sheetRow, col);
++          skipped++;
+           continue;
+         }
+         GmailApp.sendEmail(buyerEmail, mail.subject, mail.body);
+@@ -381,6 +461,14 @@
+     return;
+   }
+   sheet.getRange(rowNumber, col[header] + 1).setValue(value);
++}
++
++function markQueueRowDuplicateSkipped_(queueSheet, sheetRow, col) {
++  const skippedAt = new Date().toISOString();
++  safeSetCellByHeader_(queueSheet, sheetRow, col, 'last_error', 'duplicate payment_id already sent');
++  safeSetCellByHeader_(queueSheet, sheetRow, col, 'updated_at', skippedAt);
++  safeSetCellByHeader_(queueSheet, sheetRow, col, 'done_at', skippedAt);
++  safeSetCellByHeader_(queueSheet, sheetRow, col, 'status', 'DUPLICATE_SKIPPED');
+ }
+ 
+ function appendFulfillmentLog_(logSheet, row) {
+@@ -767,6 +855,189 @@
+   return processFulfillmentQueue_({ dryRun: true });
+ }
+ 
++function TEST_duplicateProtection_paymentIdAlreadySent() {
++  const ss = getSpreadsheet_();
++  const sheets = ensureSystemSheets_(ss);
++  const paymentId = buildTestPaymentId_('test-duplicate-sent');
++  const eventId = 'event-' + paymentId;
++  const now = new Date().toISOString();
++  const payload = buildSampleSquarePaymentPayload_(paymentId, 100, 'BRIDGE ProofPack Starter');
++
++  appendFulfillmentLog_(sheets.fulfillmentLog, {
++    sent_at: now,
++    payment_id: paymentId,
++    event_id: eventId,
++    buyer_email: 'buyer@example.com',
++    delivery_url: 'https://example.com/test-delivery',
++    mail_subject: 'duplicate protection test',
++    mail_body_hash: 'test',
++    status: 'SENT',
++    created_at: now,
++    product_key: 'proofpack_starter',
++    product_name: 'BRIDGE ProofPack Starter',
++  });
++
++  appendRowByHeader_(sheets.queue, {
++    received_at: now,
++    status: 'ENQUEUED',
++    payment_id: paymentId,
++    event_id: eventId,
++    buyer_email: 'buyer@example.com',
++    amount: 100,
++    currency: 'JPY',
++    raw_json: JSON.stringify(payload),
++    tries: 0,
++    last_error: '',
++    updated_at: now,
++    product_key: 'proofpack_starter',
++    product_name: 'BRIDGE ProofPack Starter',
++    match_type: 'test',
++    match_value: 'duplicate_protection',
++  });
++
++  const sentCountBefore = countPaymentIdSentInFulfillmentLog_(sheets.fulfillmentLog, paymentId);
++  const result = processFulfillmentQueue_({ dryRun: false, onlyPaymentId: paymentId });
++  const sentCountAfter = countPaymentIdSentInFulfillmentLog_(sheets.fulfillmentLog, paymentId);
++  const queueRow = findLatestRowObjectByPaymentId_(sheets.queue, paymentId, 'payment_id', 3);
++
++  return {
++    ok: result.ok === true &&
++      result.failed === 0 &&
++      result.skipped >= 1 &&
++      sentCountAfter === sentCountBefore &&
++      queueRow.status === 'DUPLICATE_SKIPPED' &&
++      queueRow.last_error === 'duplicate payment_id already sent',
++    result: result,
++    payment_id: paymentId,
++    sent_count_before: sentCountBefore,
++    sent_count_after: sentCountAfter,
++    queue_status: queueRow.status,
++    queue_last_error: queueRow.last_error,
++  };
++}
++
++function TEST_duplicateProtection_queueDuplicateDryRun() {
++  const ss = getSpreadsheet_();
++  const sheets = ensureSystemSheets_(ss);
++  const paymentId = buildTestPaymentId_('test-queue-duplicate');
++  const eventId = 'event-' + paymentId;
++  const payload = buildSampleSquarePaymentPayload_(paymentId, 100, 'BRIDGE ProofPack Starter');
++  const rawData = JSON.stringify(payload);
++  const product = getProofPackFallbackProduct_('test', 'queue_duplicate');
++
++  const countBefore = countPaymentIdInQueue_(sheets.queue, paymentId);
++  const firstAppend = appendQueueIfNotExists_(sheets.queue, eventId, paymentId, 'buyer@example.com', 100, 'JPY', rawData, product);
++  const secondAppend = appendQueueIfNotExists_(sheets.queue, eventId + '-duplicate', paymentId, 'buyer@example.com', 100, 'JPY', rawData, product);
++  const countAfterAppend = countPaymentIdInQueue_(sheets.queue, paymentId);
++
++  markQueueRowsForTest_(sheets.queue, paymentId, 'TEST_ONLY');
++  const dryRunResult = processFulfillmentQueue_({ dryRun: true, onlyPaymentId: paymentId });
++
++  return {
++    ok: firstAppend === true &&
++      secondAppend === false &&
++      countAfterAppend === countBefore + 1 &&
++      dryRunResult.ok === true,
++    payment_id: paymentId,
++    count_before: countBefore,
++    count_after_append: countAfterAppend,
++    first_append: firstAppend,
++    second_append: secondAppend,
++    dry_run_result: dryRunResult,
++  };
++}
++
++function buildTestPaymentId_(prefix) {
++  return prefix + '-' + new Date().getTime() + '-' + Math.floor(Math.random() * 100000);
++}
++
++function countPaymentIdInQueue_(queueSheet, paymentId) {
++  return countPaymentIdInSheetColumn_(queueSheet, paymentId, 'payment_id', 3);
++}
++
++function countPaymentIdSentInFulfillmentLog_(fulfillmentLogSheet, paymentId) {
++  if (!paymentId || !fulfillmentLogSheet || fulfillmentLogSheet.getLastRow() <= 1) {
++    return 0;
++  }
++
++  const values = fulfillmentLogSheet.getDataRange().getValues();
++  const col = getHeaderIndexMap_(values[0]);
++  const paymentIdIndex = typeof col.payment_id !== 'undefined' ? col.payment_id : 1;
++  const statusIndex = typeof col.status !== 'undefined' ? col.status : 7;
++  const targetPaymentId = String(paymentId);
++  let count = 0;
++  for (var i = 1; i < values.length; i++) {
++    if (String(values[i][paymentIdIndex] || '') === targetPaymentId &&
++        String(values[i][statusIndex] || '').toUpperCase() === 'SENT') {
++      count++;
++    }
++  }
++  return count;
++}
++
++function countPaymentIdInSheetColumn_(sheet, paymentId, headerName, fallbackColumn) {
++  if (!paymentId || !sheet || sheet.getLastRow() <= 1) {
++    return 0;
++  }
++
++  const columnNumber = getHeaderColumnNumber_(sheet, headerName, fallbackColumn);
++  if (!columnNumber) {
++    return 0;
++  }
++
++  const values = sheet.getRange(2, columnNumber, sheet.getLastRow() - 1, 1).getValues();
++  const targetPaymentId = String(paymentId);
++  let count = 0;
++  values.forEach(function (row) {
++    if (String(row[0] || '') === targetPaymentId) {
++      count++;
++    }
++  });
++  return count;
++}
++
++function findLatestRowObjectByPaymentId_(sheet, paymentId, headerName, fallbackColumn) {
++  if (!paymentId || !sheet || sheet.getLastRow() <= 1) {
++    return {};
++  }
++
++  const values = sheet.getDataRange().getValues();
++  const headers = values[0];
++  const col = getHeaderIndexMap_(headers);
++  const paymentIdIndex = typeof col[headerName] !== 'undefined' ? col[headerName] : fallbackColumn - 1;
++  const targetPaymentId = String(paymentId);
++  for (var i = values.length - 1; i >= 1; i--) {
++    if (String(values[i][paymentIdIndex] || '') === targetPaymentId) {
++      const rowObj = { _row: i + 1 };
++      headers.forEach(function (header, index) {
++        rowObj[String(header)] = values[i][index];
++      });
++      return rowObj;
++    }
++  }
++  return {};
++}
++
++function markQueueRowsForTest_(queueSheet, paymentId, status) {
++  if (!paymentId || !queueSheet || queueSheet.getLastRow() <= 1) {
++    return;
++  }
++
++  const values = queueSheet.getDataRange().getValues();
++  const col = getHeaderIndexMap_(values[0]);
++  if (typeof col.payment_id === 'undefined' || typeof col.status === 'undefined') {
++    return;
++  }
++
++  const targetPaymentId = String(paymentId);
++  for (var i = 1; i < values.length; i++) {
++    if (String(values[i][col.payment_id] || '') === targetPaymentId) {
++      safeSetCellByHeader_(queueSheet, i + 1, col, 'status', status);
++      safeSetCellByHeader_(queueSheet, i + 1, col, 'updated_at', new Date().toISOString());
++    }
++  }
++}
++
+ function buildSampleSquarePaymentPayload_(paymentId, amount, note) {
+   return {
+     event_id: 'event-' + paymentId,
+PATCH
+          git apply --check /tmp/proofpack-duplicate-hotfix.patch
+          git apply /tmp/proofpack-duplicate-hotfix.patch
+          node --check < main.gs
+          actual_sha="$(sha256sum main.gs | awk '{print toupper($1)}')"
+          expected_sha="A3FC5B6B249C6AEF7AACD1C4591CF38A5B56E4A84BA93163A9E86CFE8BCFC5D7"
+          if [ "$actual_sha" != "$expected_sha" ]; then
+            echo "Unexpected main.gs sha256: $actual_sha"
+            exit 1
+          fi
+
+      - name: Commit hotfix and remove temporary workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/codex-proofpack-duplicate-hotfix.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add main.gs .github/workflows/codex-proofpack-duplicate-hotfix.yml
+          git commit -m "Prevent duplicate ProofPack fulfillment emails"
+          git push
