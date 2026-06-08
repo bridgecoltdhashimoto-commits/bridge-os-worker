@@ -19,12 +19,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: true
+          fetch-depth: 2
 
       - name: Apply verified main.gs patch
         shell: bash
         run: |
           set -euo pipefail
-          expected_parent="6b8ad8b6c51335d0c722ff8abaecca149cd0201d"
+          expected_parent="6d047dc3c236b613f06b7d2eca6dc266d6ae1b5f"
           actual_parent="$(git rev-parse HEAD^)"
           if [ "$actual_parent" != "$expected_parent" ]; then
             echo "Unexpected parent commit: $actual_parent"
