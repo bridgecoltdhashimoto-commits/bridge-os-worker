@@ -1,15 +1,29 @@
 /**
- * Stage 1 + Stage 2 + Stage 3 (minimal):
+ * Stage 1 + Stage 2 + Stage 3 (minimal) - v18 direct panic context:
  * Square -> Worker -> GAS -> Sheets -> Gmail
  * Stage 3: Fulfillment Queue placeholder processing
  */
 function doPost(e) {
-  const lock = LockService.getScriptLock();
-  if (!lock.tryLock(30000)) {
-    return jsonResponse_({ ok: false, reason: 'lock_not_acquired' });
-  }
+  bridgeEnsurePanicProductMap_();
+
+  /*
+   * 重要：
+   * PanicフォームPOSTとPanic対象Square webhookは、既存BRIDGE OSのキュー処理より前で処理する。
+   *
+   * 理由：
+   * - フォームPOSTはWEBHOOK_TOKENではなく、Panic個別tokenで認証するため
+   * - Panic側の関数は内部でLockServiceを使うため、既存BRIDGE OSのscript lock取得中に呼ぶと不安定になるため
+   * - 対象外の既存ProofPack / estimate_frontは従来どおり既存キューへ流すため
+   */
+
+  var panicPost = panicHandleDoPost_(e);
+  if (panicPost) return panicPost;
+
+  var panicFallbackPost = bridgeHandlePanicFormPostFallback_(e);
+  if (panicFallbackPost) return panicFallbackPost;
 
   let logSheet = null;
+
   try {
     const props = PropertiesService.getScriptProperties();
     const expectedToken = props.getProperty('WEBHOOK_TOKEN');
@@ -52,40 +66,374 @@ function doPost(e) {
       return jsonResponse_({ ok: true, status: 'ignored', reason: 'non_completed_payment' });
     }
 
-    if (paymentId && isPaymentIdAlreadyReceivedOrQueuedOrSent_(sheets, paymentId)) {
-      return jsonResponse_({ ok: true, status: 'ignored', reason: 'duplicate_payment_id' });
+    /*
+     * Panic対象商品の場合は、既存BRIDGE OSキューには入れず、Panic側へ直行する。
+     * 既存Product_Masterでvariation_id判定済みの情報をpayloadへ補強してから渡す。
+     * ここは既存BRIDGE OSのscript lockを取得する前に実行する。
+     */
+    var panicContext = bridgeResolvePanicContext_(payload, payment, buyerEmail, product);
+    if (panicContext && panicContext.variation_id) {
+      var panicWebhook = panicCreateFormForPayment_(panicContext);
+      return panicJsonOutput_(panicWebhook);
     }
 
-    logSheet.appendRow([new Date(), 'RECEIVED', eventId, eventType, paymentId, amount]);
-    appendQueueIfNotExists_(sheets.queue, eventId, paymentId, buyerEmail, amount, currency, rawData, product);
-    appendEvidence_(sheets.evidence, eventId, paymentId, rawData);
-    appendRevenueAudit_(sheets.revenueAudit, eventId, paymentId, amount, currency, paymentStatus, buyerEmail, product);
-
-    if (adminEmail) {
-      GmailApp.sendEmail(
-        adminEmail,
-        '【BRIDGE OS TEST】Square 100円決済テスト完了',
-        [
-          'Square 100円決済テストの疎通が完了しました。',
-          '',
-          `event_id: ${eventId}`,
-          `event_type: ${eventType}`,
-          `payment_id: ${paymentId}`,
-          `amount: ${amount}`,
-          `received_at: ${new Date().toISOString()}`,
-        ].join('\n')
-      );
+    /*
+     * ここから先は既存BRIDGE OSの通常納品処理。
+     * Panic対象外だけを既存キューへ入れる。
+     */
+    const lock = LockService.getScriptLock();
+    if (!lock.tryLock(30000)) {
+      return jsonResponse_({ ok: false, reason: 'lock_not_acquired' });
     }
 
-    return jsonResponse_({ ok: true, status: 'recorded' });
+    try {
+      if (paymentId && isPaymentIdAlreadyReceivedOrQueuedOrSent_(sheets, paymentId)) {
+        return jsonResponse_({ ok: true, status: 'ignored', reason: 'duplicate_payment_id' });
+      }
+
+      logSheet.appendRow([new Date(), 'RECEIVED', eventId, eventType, paymentId, amount]);
+      appendQueueIfNotExists_(sheets.queue, eventId, paymentId, buyerEmail, amount, currency, rawData, product);
+      appendEvidence_(sheets.evidence, eventId, paymentId, rawData);
+      appendRevenueAudit_(sheets.revenueAudit, eventId, paymentId, amount, currency, paymentStatus, buyerEmail, product);
+
+      if (adminEmail) {
+        GmailApp.sendEmail(
+          adminEmail,
+          '【BRIDGE OS TEST】Square 100円決済テスト完了',
+          [
+            'Square 100円決済テストの疎通が完了しました。',
+            '',
+            `event_id: ${eventId}`,
+            `event_type: ${eventType}`,
+            `payment_id: ${paymentId}`,
+            `amount: ${amount}`,
+            `received_at: ${new Date().toISOString()}`,
+          ].join('\n')
+        );
+      }
+
+      return jsonResponse_({ ok: true, status: 'recorded' });
+    } finally {
+      lock.releaseLock();
+    }
   } catch (err) {
     if (logSheet) {
       logSheet.appendRow([new Date(), 'ERROR', '', '', '', String(err && err.message ? err.message : err)]);
     }
     return jsonResponse_({ ok: false, reason: String(err && err.message ? err.message : err) });
-  } finally {
-    lock.releaseLock();
   }
+}
+
+/**
+ * PanicフォームPOSTの補助分岐。
+ *
+ * PanicPdfAddon.gs側の panicHandleDoPost_(e) が action/mode を見て処理するが、
+ * テストPOSTや一部ブラウザPOSTで action が欠落しても、
+ * payment_id + token + Panicフォーム項目が揃っていればPanicフォームとして処理する。
+ *
+ * WEBHOOK_TOKEN認証とは別系統の購入者フォームtokenを使うため、
+ * 既存Square webhook認証へ落とさない。
+ */
+function bridgeHandlePanicFormPostFallback_(e) {
+  bridgeEnsurePanicProductMap_();
+
+  if (!e || !e.parameter) {
+    return null;
+  }
+
+  var params = e.parameter;
+  var hasPaymentToken = !!(params.payment_id && params.token);
+  var hasPanicFields = !!(
+    params.current_issue ||
+    params.relationship ||
+    params.started_when ||
+    params.amount_or_impact ||
+    params.evidence ||
+    params.biggest_problem_today ||
+    params.danger_flag ||
+    params.free_note ||
+    params.display_name ||
+    params.customer_email
+  );
+  var hasWebhookJson = !!(e.postData && e.postData.contents && String(e.postData.contents || '').trim().charAt(0) === '{');
+
+  if (!hasPaymentToken || !hasPanicFields || hasWebhookJson) {
+    return null;
+  }
+
+  try {
+    var result = panicProcessFormSubmit_(panicBuildFormDataFromParameters_(params));
+    return HtmlService.createHtmlOutput(panicBuildSubmitResultHtml_(result))
+      .setTitle('BRIDGE 相談前整理フォーム');
+  } catch (err) {
+    return HtmlService.createHtmlOutput(panicBuildSubmitResultHtml_({
+      ok: false,
+      status: PANIC_STATUS.ERROR,
+      error_message: String(err && err.message ? err.message : err)
+    })).setTitle('BRIDGE 相談前整理フォーム');
+  }
+}
+
+
+/**
+ * Panic商品定義を既存PanicPdfAddon.gs側のPANIC_PRODUCT_MAPへ補完する。
+ * 既存ファイル側で一部商品だけが登録されている場合でも、5商品すべてがPanic処理に入るようにする。
+ */
+function bridgeEnsurePanicProductMap_() {
+  if (typeof PANIC_PRODUCT_MAP === 'undefined' || !PANIC_PRODUCT_MAP) {
+    PANIC_PRODUCT_MAP = {};
+  }
+
+  var catalog = bridgeGetPanicCatalog_();
+  for (var i = 0; i < catalog.length; i++) {
+    var item = catalog[i];
+    PANIC_PRODUCT_MAP[item.variation_id] = {
+      product_key: item.product_key,
+      sku: item.sku,
+      price: item.price
+    };
+  }
+}
+
+function bridgeGetPanicCatalog_() {
+  return [
+    {
+      product_key: 'panic_nav_1000',
+      sku: 'BRIDGE-PANIC-NAV-1000',
+      variation_id: 'AQ5KGY3VPS42RXMIIVTHVIBA',
+      price: 1000
+    },
+    {
+      product_key: 'panic_pack_9800',
+      sku: 'BRIDGE-PANIC-PACK-9800',
+      variation_id: '5WCLFAOXWKWF5LFYK2QMMRCE',
+      price: 9800
+    },
+    {
+      product_key: 'panic_sort_29800',
+      sku: 'BRIDGE-PANIC-SORT-29800',
+      variation_id: 'BSQTVUMUHNSDHXXIANPEE2ZJ',
+      price: 29800
+    },
+    {
+      product_key: 'panic_done_49800',
+      sku: 'BRIDGE-PANIC-DONE-49800',
+      variation_id: 'E3B3YP4SFRKOIJLRSXDJINDK',
+      price: 49800
+    },
+    {
+      product_key: 'biz_proof_148000',
+      sku: 'BRIDGE-BIZ-PROOF-148000',
+      variation_id: 'N6B26JXPKVLKVUXDKD6IPVBM',
+      price: 148000
+    }
+  ];
+}
+
+/**
+ * Product_MasterまたはpayloadからPanic対象のcontextを直接作る。
+ * panicHandleSquareWebhookIfTarget_ の内部抽出に依存せず、5商品のvariation_idを確実に渡す。
+ */
+function bridgeResolvePanicContext_(payload, payment, buyerEmail, product) {
+  bridgeEnsurePanicProductMap_();
+
+  var productKey = product && product.product_key ? String(product.product_key) : '';
+  var matchType = product && product.match_type ? String(product.match_type).toLowerCase() : '';
+  var matchValue = product && product.match_value ? String(product.match_value) : '';
+  var variationId = '';
+
+  if (matchType === 'variation_id' && bridgeIsKnownPanicVariationId_(matchValue)) {
+    variationId = matchValue;
+  }
+
+  if (!variationId) {
+    variationId = bridgeFindKnownPanicVariationId_(payload);
+  }
+
+  if (!variationId && bridgeIsPanicProductKey_(productKey)) {
+    variationId = bridgeVariationIdForPanicProductKey_(productKey);
+  }
+
+  if (!bridgeIsKnownPanicVariationId_(variationId)) {
+    return null;
+  }
+
+  var catalogItem = bridgeGetPanicCatalogItemByVariationId_(variationId);
+  if (!catalogItem) {
+    return null;
+  }
+
+  var paymentId = payment && payment.id ? String(payment.id) : String((payload && (payload.payment_id || payload.paymentId)) || '');
+  if (!paymentId && payload) {
+    paymentId = String(panicFindFirstValueByKeys_(payload, ['payment_id', 'paymentId', 'id']) || '');
+  }
+
+  var email = buyerEmail || '';
+  if (!email && payment) {
+    email = payment.buyer_email_address || payment.receipt_email || '';
+  }
+  if (!email && payload) {
+    email = payload.customer_email || payload.buyer_email_address || payload.email || '';
+  }
+
+  return {
+    payment_id: paymentId,
+    variation_id: variationId,
+    product_key: catalogItem.product_key,
+    sku: catalogItem.sku,
+    price: catalogItem.price,
+    customer_email: email,
+    amount: payment && payment.amount_money ? payment.amount_money.amount : catalogItem.price,
+    source: 'SQUARE_WEBHOOK'
+  };
+}
+
+function bridgeGetPanicCatalogItemByVariationId_(variationId) {
+  var catalog = bridgeGetPanicCatalog_();
+  for (var i = 0; i < catalog.length; i++) {
+    if (catalog[i].variation_id === String(variationId || '')) {
+      return catalog[i];
+    }
+  }
+  return null;
+}
+
+function bridgeVariationIdForPanicProductKey_(productKey) {
+  var catalog = bridgeGetPanicCatalog_();
+  for (var i = 0; i < catalog.length; i++) {
+    if (catalog[i].product_key === String(productKey || '')) {
+      return catalog[i].variation_id;
+    }
+  }
+  return '';
+}
+
+/**
+ * Panic webhook判定補強。
+ *
+ * Square payloadやテストpayloadの構造差で variation_id が深い位置にある場合でも、
+ * Product_Masterで解決済みのvariation_id情報をPanic側へ確実に渡す。
+ */
+function bridgeBuildPanicWebhookPayload_(payload, payment, buyerEmail, product) {
+  if (!payload || typeof payload !== 'object') {
+    return payload;
+  }
+
+  var copy = JSON.parse(JSON.stringify(payload));
+  var resolvedPaymentId = payment && payment.id ? String(payment.id) : String(copy.payment_id || copy.paymentId || '');
+  var resolvedAmount = payment && payment.amount_money && typeof payment.amount_money.amount !== 'undefined'
+    ? Number(payment.amount_money.amount)
+    : (typeof copy.amount !== 'undefined' ? Number(copy.amount) : '');
+
+  var productKey = product && product.product_key ? String(product.product_key) : '';
+  var matchType = product && product.match_type ? String(product.match_type).toLowerCase() : '';
+  var matchValue = product && product.match_value ? String(product.match_value) : '';
+  var variationId = '';
+
+  if (matchType === 'variation_id' && matchValue) {
+    variationId = matchValue;
+  }
+
+  if (!variationId) {
+    variationId = bridgeFindKnownPanicVariationId_(copy);
+  }
+
+  if (!bridgeIsPanicProductKey_(productKey) && !bridgeIsKnownPanicVariationId_(variationId)) {
+    return copy;
+  }
+
+  copy.payment_id = copy.payment_id || resolvedPaymentId;
+  copy.paymentId = copy.paymentId || resolvedPaymentId;
+  copy.variation_id = variationId || copy.variation_id || '';
+  copy.product_key = productKey || copy.product_key || '';
+  copy.sku = product && product.notes ? String(product.notes) : (copy.sku || '');
+  copy.customer_email = copy.customer_email || buyerEmail || '';
+  copy.buyer_email_address = copy.buyer_email_address || buyerEmail || '';
+  copy.amount = copy.amount || resolvedAmount;
+
+  if (!copy.data) copy.data = {};
+  if (!copy.data.object) copy.data.object = {};
+  if (!copy.data.object.payment) copy.data.object.payment = payment || {};
+  copy.data.object.payment.id = copy.data.object.payment.id || resolvedPaymentId;
+  copy.data.object.payment.buyer_email_address = copy.data.object.payment.buyer_email_address || buyerEmail || '';
+  if (!copy.data.object.payment.amount_money && resolvedAmount !== '') {
+    copy.data.object.payment.amount_money = { amount: resolvedAmount, currency: 'JPY' };
+  }
+
+  if (!copy.data.object.order) {
+    copy.data.object.order = {
+      id: copy.data.object.payment.order_id || ('order_' + resolvedPaymentId),
+      line_items: []
+    };
+  }
+  if (!copy.data.object.order.line_items || !copy.data.object.order.line_items.length) {
+    copy.data.object.order.line_items = [{
+      name: productKey || copy.product_key || '',
+      catalog_object_id: variationId || '',
+      variation_id: variationId || '',
+      quantity: '1',
+      total_money: {
+        amount: resolvedAmount || 0,
+        currency: 'JPY'
+      }
+    }];
+  }
+
+  return copy;
+}
+
+function bridgeIsPanicProductKey_(productKey) {
+  return [
+    'panic_nav_1000',
+    'panic_pack_9800',
+    'panic_sort_29800',
+    'panic_done_49800',
+    'biz_proof_148000'
+  ].indexOf(String(productKey || '')) >= 0;
+}
+
+function bridgeIsKnownPanicVariationId_(variationId) {
+  return [
+    'AQ5KGY3VPS42RXMIIVTHVIBA',
+    '5WCLFAOXWKWF5LFYK2QMMRCE',
+    'BSQTVUMUHNSDHXXIANPEE2ZJ',
+    'E3B3YP4SFRKOIJLRSXDJINDK',
+    'N6B26JXPKVLKVUXDKD6IPVBM'
+  ].indexOf(String(variationId || '')) >= 0;
+}
+
+function bridgeFindKnownPanicVariationId_(value) {
+  if (value === null || typeof value === 'undefined') {
+    return '';
+  }
+
+  if (typeof value === 'string') {
+    return bridgeIsKnownPanicVariationId_(value) ? value : '';
+  }
+
+  if (typeof value !== 'object') {
+    return '';
+  }
+
+  if (Array.isArray(value)) {
+    for (var i = 0; i < value.length; i++) {
+      var foundInArray = bridgeFindKnownPanicVariationId_(value[i]);
+      if (foundInArray) {
+        return foundInArray;
+      }
+    }
+    return '';
+  }
+
+  var keys = Object.keys(value);
+  for (var k = 0; k < keys.length; k++) {
+    var found = bridgeFindKnownPanicVariationId_(value[keys[k]]);
+    if (found) {
+      return found;
+    }
+  }
+
+  return '';
 }
 
 function getSpreadsheet_() {
@@ -186,923 +534,7 @@ function isPaymentIdExistsInSheetColumn_(sheet, paymentId, headerName, fallbackC
 
   const columnNumber = getHeaderColumnNumber_(sheet, headerName, fallbackColumn);
   if (!columnNumber) {
-    return false;
-  }
-
-  const targetPaymentId = String(paymentId);
-  const values = sheet.getRange(2, columnNumber, sheet.getLastRow() - 1, 1).getValues();
-  return values.some(function (row) {
-    return String(row[0] || '') === targetPaymentId;
-  });
-}
-
-function getHeaderColumnNumber_(sheet, headerName, fallbackColumn) {
-  if (!sheet || sheet.getLastColumn() <= 0) {
-    return 0;
-  }
-
-  const lastColumn = sheet.getLastColumn();
-  const headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
-  for (var i = 0; i < headers.length; i++) {
-    if (String(headers[i]) === String(headerName)) {
-      return i + 1;
-    }
-  }
-
-  return fallbackColumn && fallbackColumn <= lastColumn ? fallbackColumn : 0;
-}
-
-function appendQueueIfNotExists_(queueSheet, eventId, paymentId, buyerEmail, amount, currency, rawData, product) {
-  if (paymentId && isPaymentIdExistsInQueue_(queueSheet, paymentId)) {
-    return false;
-  }
-
-  const now = new Date();
-  appendRowByHeader_(queueSheet, {
-    received_at: now.toISOString(),
-    status: 'ENQUEUED',
-    payment_id: paymentId,
-    event_id: eventId,
-    buyer_email: buyerEmail,
-    amount: amount,
-    currency: currency,
-    raw_json: rawData,
-    tries: 0,
-    last_error: '',
-    updated_at: now.toISOString(),
-    product_key: product && product.product_key ? product.product_key : 'UNKNOWN_PRODUCT',
-    product_name: product && product.product_name ? product.product_name : '',
-    match_type: product && product.match_type ? product.match_type : '',
-    match_value: product && product.match_value ? product.match_value : '',
-  });
-  return true;
-}
-
-function appendEvidence_(evidenceSheet, eventId, paymentId, rawData) {
-  const hashBytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, rawData, Utilities.Charset.UTF_8);
-  const payloadHash = hashBytes.map(function (b) {
-    const v = (b < 0) ? b + 256 : b;
-    return ('0' + v.toString(16)).slice(-2);
-  }).join('');
-
-  evidenceSheet.appendRow([new Date().toISOString(), 'square', eventId, paymentId, 'payment.updated', payloadHash, rawData]);
-}
-
-function appendRevenueAudit_(auditSheet, eventId, paymentId, amount, currency, status, buyerEmail, product) {
-  appendRowByHeader_(auditSheet, {
-    received_at: new Date().toISOString(),
-    payment_id: paymentId,
-    event_id: eventId,
-    amount: amount,
-    currency: currency,
-    status: status,
-    buyer_email: buyerEmail,
-    product_key: product && product.product_key ? product.product_key : 'UNKNOWN_PRODUCT',
-    product_name: product && product.product_name ? product.product_name : '',
-  });
-}
-
-function extractBuyerEmail_(payload, payment) {
-  const candidates = [
-    payment && payment.buyer_email_address,
-    payment && payment.receipt_email,
-    payment && payment.customer_details && payment.customer_details.email_address,
-    payload && payload.data && payload.data.object && payload.data.object.customer && payload.data.object.customer.email_address,
-  ];
-
-  for (var i = 0; i < candidates.length; i++) {
-    if (candidates[i]) {
-      return String(candidates[i]);
-    }
-  }
-  return '';
-}
-
-function STAGE3_manualTest() {
-  return processFulfillmentQueue();
-}
-
-function processFulfillmentQueue() {
-  return processFulfillmentQueue_({ dryRun: false });
-}
-
-function processFulfillmentQueue_(options) {
-  const dryRun = !!(options && options.dryRun);
-  const onlyPaymentId = options && options.onlyPaymentId ? String(options.onlyPaymentId) : '';
-  const lock = LockService.getScriptLock();
-  if (!lock.tryLock(30000)) {
-    return { ok: false, reason: 'lock_not_acquired' };
-  }
-
-  const ss = getSpreadsheet_();
-  const sheets = ensureSystemSheets_(ss);
-  const queueSheet = sheets.queue;
-  const logSheet = sheets.fulfillmentLog;
-  const dlqSheet = sheets.fulfillmentDLQ;
-  const aiIntakeLogSheet = sheets.aiIntakeLog;
-  try {
-    const values = queueSheet.getDataRange().getValues();
-    if (values.length <= 1) {
-      return { ok: true, processed: 0, failed: 0, skipped: 0 };
-    }
-
-    const headers = values[0];
-    const col = getHeaderIndexMap_(headers);
-    let processed = 0;
-    let failed = 0;
-    let skipped = 0;
-
-    for (var i = 1; i < values.length; i++) {
-      const row = values[i];
-      const sheetRow = i + 1;
-      const status = String(row[col.status] || '');
-      const paymentId = String(row[col.payment_id] || '');
-      const eventId = String(row[col.event_id] || '');
-      const buyerEmail = String(row[col.buyer_email] || '');
-      const rawJson = String(row[col.raw_json] || '');
-
-      if (onlyPaymentId && paymentId !== onlyPaymentId) {
-        skipped++;
-        continue;
-      }
-
-      if (status !== 'ENQUEUED') {
-        skipped++;
-        continue;
-      }
-
-      try {
-        const startedAt = new Date().toISOString();
-        if (!dryRun) {
-          setCellByHeader_(queueSheet, sheetRow, col, 'status', 'PROCESSING');
-          setCellByHeader_(queueSheet, sheetRow, col, 'updated_at', startedAt);
-        }
-
-        if (!dryRun && paymentId && isPaymentIdAlreadySent_(logSheet, paymentId)) {
-          markQueueRowDuplicateSkipped_(queueSheet, sheetRow, col);
-          skipped++;
-          continue;
-        }
-
-        const payload = parseJsonSafe_(rawJson);
-        const payment = payload && payload.data && payload.data.object && payload.data.object.payment ? payload.data.object.payment : {};
-        const product = resolveProductForQueueRow_(sheets.productMaster, row, col, payload, payment);
-        if (!product || product.product_key === 'UNKNOWN_PRODUCT') {
-          throw new Error('UNKNOWN_PRODUCT: product could not be resolved from Square payload');
-        }
-        const delivery = getDeliveryConfigForProduct_(product);
-        const aiIntakeResult = (!dryRun && product.product_key === 'proofpack_starter') ? maybeCreateProofPackAiIntake_(aiIntakeLogSheet, {
-          source: 'square',
-          payment_id: paymentId,
-          event_id: eventId,
-          buyer_email: buyerEmail,
-          raw_json: rawJson,
-          original_message: extractProofPackOriginalMessage_(rawJson),
-        }) : null;
-        if (!buyerEmail) {
-          throw new Error('buyer_email is empty');
-        }
-
-        const mail = buildDeliveryMailByProduct_(product, {
-          shopName: delivery.shopName,
-          deliveryUrl: delivery.deliveryUrl,
-          supportFormUrl: delivery.supportFormUrl,
-          buyerEmail: buyerEmail,
-          paymentId: paymentId,
-          eventId: eventId,
-        });
-        if (dryRun) {
-          processed++;
-          continue;
-        }
-        if (paymentId && isPaymentIdAlreadySent_(logSheet, paymentId)) {
-          markQueueRowDuplicateSkipped_(queueSheet, sheetRow, col);
-          skipped++;
-          continue;
-        }
-        GmailApp.sendEmail(buyerEmail, mail.subject, mail.body);
-        if (product.product_key === 'proofpack_starter') {
-          notifyAdminOfProofPackAiIntake_(delivery.adminEmail, aiIntakeResult);
-        }
-
-        const doneAt = new Date().toISOString();
-        safeSetCellByHeader_(queueSheet, sheetRow, col, 'product_key', product.product_key);
-        safeSetCellByHeader_(queueSheet, sheetRow, col, 'product_name', product.product_name);
-        safeSetCellByHeader_(queueSheet, sheetRow, col, 'match_type', product.match_type);
-        safeSetCellByHeader_(queueSheet, sheetRow, col, 'match_value', product.match_value);
-        setCellByHeader_(queueSheet, sheetRow, col, 'delivery_url', delivery.deliveryUrl);
-        setCellByHeader_(queueSheet, sheetRow, col, 'done_at', doneAt);
-        setCellByHeader_(queueSheet, sheetRow, col, 'updated_at', doneAt);
-        setCellByHeader_(queueSheet, sheetRow, col, 'status', 'DONE');
-        appendFulfillmentLog_(logSheet, {
-          sent_at: doneAt,
-          payment_id: paymentId,
-          event_id: eventId,
-          buyer_email: buyerEmail,
-          delivery_url: delivery.deliveryUrl,
-          mail_subject: mail.subject,
-          mail_body_hash: toSha256Hex_(mail.body),
-          status: 'SENT',
-          created_at: doneAt,
-          product_key: product.product_key,
-          product_name: product.product_name,
-        });
-        processed++;
-      } catch (err) {
-        failed++;
-        const message = String(err && err.message ? err.message : err);
-        if (dryRun) {
-          continue;
-        }
-        const currentTries = Number(row[col.tries] || 0);
-        const updatedAt = new Date().toISOString();
-
-        safeSetCellByHeader_(queueSheet, sheetRow, col, 'tries', currentTries + 1);
-        safeSetCellByHeader_(queueSheet, sheetRow, col, 'last_error', message);
-        safeSetCellByHeader_(queueSheet, sheetRow, col, 'updated_at', updatedAt);
-        safeSetCellByHeader_(queueSheet, sheetRow, col, 'status', 'ERROR');
-
-        appendFulfillmentDlq_(dlqSheet, {
-          event_id: eventId,
-          payment_id: paymentId,
-          buyer_email: buyerEmail,
-          error: message,
-          raw_row: JSON.stringify(row),
-          timestamp: updatedAt,
-          product_key: typeof col.product_key !== 'undefined' ? String(row[col.product_key] || '') : '',
-          product_name: typeof col.product_name !== 'undefined' ? String(row[col.product_name] || '') : '',
-        });
-      }
-    }
-
-    return { ok: true, processed: processed, failed: failed, skipped: skipped };
-  } finally {
-    lock.releaseLock();
-  }
-}
-
-function getHeaderIndexMap_(headers) {
-  const map = {};
-  headers.forEach(function (header, index) {
-    map[String(header)] = index;
-  });
-  return map;
-}
-
-function setCellByHeader_(sheet, rowNumber, col, header, value) {
-  if (typeof col[header] === 'undefined') {
-    throw new Error('Missing required header: ' + header);
-  }
-  sheet.getRange(rowNumber, col[header] + 1).setValue(value);
-}
-
-function safeSetCellByHeader_(sheet, rowNumber, col, header, value) {
-  if (typeof col[header] === 'undefined') {
-    return;
-  }
-  sheet.getRange(rowNumber, col[header] + 1).setValue(value);
-}
-
-function markQueueRowDuplicateSkipped_(queueSheet, sheetRow, col) {
-  const skippedAt = new Date().toISOString();
-  safeSetCellByHeader_(queueSheet, sheetRow, col, 'last_error', 'duplicate payment_id already sent');
-  safeSetCellByHeader_(queueSheet, sheetRow, col, 'updated_at', skippedAt);
-  safeSetCellByHeader_(queueSheet, sheetRow, col, 'done_at', skippedAt);
-  safeSetCellByHeader_(queueSheet, sheetRow, col, 'status', 'DUPLICATE_SKIPPED');
-}
-
-function appendFulfillmentLog_(logSheet, row) {
-  appendRowByHeader_(logSheet, row);
-}
-
-function appendFulfillmentDlq_(dlqSheet, row) {
-  appendRowByHeader_(dlqSheet, row);
-}
-
-function appendRowByHeader_(sheet, rowObj) {
-  const lastColumn = sheet.getLastColumn();
-  const headers = lastColumn > 0 ? sheet.getRange(1, 1, 1, lastColumn).getValues()[0] : [];
-  const row = headers.map(function (header) {
-    const key = String(header);
-    return Object.prototype.hasOwnProperty.call(rowObj, key) ? rowObj[key] : '';
-  });
-  sheet.appendRow(row);
-}
-
-function getDeliveryConfig_() {
-  const config = getBaseDeliverySettings_();
-  if (!config.deliveryUrl) {
-    throw new Error('DELIVERY_URL is required');
-  }
-  return config;
-}
-
-function getBaseDeliverySettings_() {
-  const props = PropertiesService.getScriptProperties();
-  return {
-    shopName: String(props.getProperty('SHOP_NAME') || 'BRIDGE OS'),
-    deliveryUrl: String(props.getProperty('DELIVERY_URL') || ''),
-    supportFormUrl: String(props.getProperty('SUPPORT_FORM_URL') || ''),
-    adminEmail: String(props.getProperty('ADMIN_EMAIL') || ''),
-  };
-}
-
-function buildDeliveryMail_(shopName, deliveryUrl, supportFormUrl) {
-  const subject = '【納品】BRIDGE ProofPack Starter ご購入ありがとうございます';
-  const lines = [
-    'このたびは「BRIDGE ProofPack Starter」をご購入いただき、誠にありがとうございます。',
-    '',
-    '以下URLより納品データをご確認ください。',
-    '納品URL: ' + deliveryUrl,
-    '',
-    '【12点セット内容】',
-    '01_取引前チェックリスト',
-    '02_相手先確認シート',
-    '03_未払い時系列整理シート',
-    '04_取引条件確認シート',
-    '05_見積前確認テンプレ',
-    '06_受注確認テンプレ',
-    '07_納品完了確認テンプレ',
-    '08_変更・キャンセル確認テンプレ',
-    '09_クレーム一次返信テンプレ',
-    '10_LINE・メール証拠保存ルール',
-    '11_専門家相談前の資料整理シート',
-    '12_使い方・免責ガイド',
-    '',
-    '【使い方（かんたん3ステップ）】',
-    'STEP1: テンプレートに時系列・金額・連絡内容を記入してください。',
-    'STEP2: 関連資料を証拠ファイル目録に沿って整理し、保存してください。',
-    'STEP3: サマリー作成ガイドに沿って要点をまとめ、提出前セルフチェックを実施してください。',
-    '',
-    '【ご案内】',
-    '・本商品は、記録整理を補助するためのデジタルコンテンツです。',
-    '・法律相談、債権回収、代理交渉その他の専門業務は提供しておりません。',
-    '・サポートは納品不備（ファイル欠落・破損・URL不達）に限り対応いたします。',
-    '',
-    '発行元: 株式会社BRIDGE',
-  ];
-  if (supportFormUrl) {
-    lines.push('納品不備のご連絡窓口: ' + supportFormUrl);
-  }
-  return { subject: subject, body: lines.join('\n') };
-}
-
-
-
-function getDeliveryConfigForProduct_(product) {
-  const base = getBaseDeliverySettings_();
-  const deliveryUrl = String(product && product.delivery_url ? product.delivery_url : base.deliveryUrl);
-  const supportFormUrl = String(product && product.support_url ? product.support_url : base.supportFormUrl);
-  if (!deliveryUrl) {
-    throw new Error('delivery_url is required for product: ' + String(product && product.product_key ? product.product_key : 'UNKNOWN_PRODUCT'));
-  }
-  return {
-    shopName: base.shopName,
-    deliveryUrl: deliveryUrl,
-    supportFormUrl: supportFormUrl,
-    adminEmail: base.adminEmail,
-  };
-}
-
-function buildDeliveryMailByProduct_(product, context) {
-  const deliveryUrl = String(context && context.deliveryUrl ? context.deliveryUrl : (product && product.delivery_url) || '');
-  const supportFormUrl = String(context && context.supportFormUrl ? context.supportFormUrl : (product && product.support_url) || '');
-  const productKey = String(product && product.product_key ? product.product_key : '');
-  const productName = String(product && product.product_name ? product.product_name : '');
-  const subjectTemplate = String(product && product.mail_subject ? product.mail_subject : '');
-  const bodyTemplate = String(product && product.mail_body_template ? product.mail_body_template : '');
-
-  if (productKey === 'proofpack_starter' && !subjectTemplate && !bodyTemplate) {
-    return buildDeliveryMail_(context && context.shopName, deliveryUrl, supportFormUrl);
-  }
-
-  if (productKey === 'estimate_front' && !subjectTemplate && !bodyTemplate) {
-    return buildEstimateFrontDeliveryMail_(productName, deliveryUrl, supportFormUrl);
-  }
-
-  const tokens = {
-    shop_name: String(context && context.shopName ? context.shopName : 'BRIDGE OS'),
-    product_key: productKey,
-    product_name: productName,
-    delivery_url: deliveryUrl,
-    support_url: supportFormUrl,
-    buyer_email: String(context && context.buyerEmail ? context.buyerEmail : ''),
-    payment_id: String(context && context.paymentId ? context.paymentId : ''),
-    event_id: String(context && context.eventId ? context.eventId : ''),
-  };
-  const subject = applyTemplate_(subjectTemplate || '【納品】' + productName + ' ご購入ありがとうございます', tokens);
-  const body = bodyTemplate
-    ? applyTemplate_(bodyTemplate, tokens)
-    : buildGenericDeliveryMailBody_(tokens);
-  return { subject: subject, body: body };
-}
-
-function buildEstimateFrontDeliveryMail_(productName, deliveryUrl, supportFormUrl) {
-  const safeProductName = productName || 'BRIDGE 見積前受付フロント';
-  const subject = '【納品】' + safeProductName + ' ご購入ありがとうございます';
-  const lines = [
-    'このたびは「' + safeProductName + '」をご購入いただき、誠にありがとうございます。',
-    '',
-    '以下URLより、購入者向け納品パッケージをご確認ください。',
-    '納品URL: ' + deliveryUrl,
-    '',
-    '【納品パッケージ内容】',
-    '01_導入チェックリスト',
-    '02_受付フォーム項目テンプレート',
-    '03_自動返信テンプレート',
-    '04_運用ルール_免責',
-    'Product_Master_見積前受付フロント_sample.csv',
-    '',
-    '【初回設定の流れ】',
-    'STEP1: 導入チェックリストで事業者名、対応エリア、返信目安、予約金/着手金の方針を確認してください。',
-    'STEP2: 受付フォーム項目テンプレートから、自社に必要な質問だけを選んでください。',
-    'STEP3: 自動返信テンプレートを自社の営業時間、返信目安、注意事項に合わせて調整してください。',
-    'STEP4: 本番公開前に、必ずテストモードまたは下書き確認で送信内容を確認してください。',
-    '',
-    '【ご案内】',
-    '・本商品は、見積前の受付導線と情報整理を補助するデジタルコンテンツです。',
-    '・工事可否、見積金額、契約条件、法律・税務判断は提供しておりません。',
-    '・Square決済リンクや本番メール送信は、内容確認後に購入者または運用担当者が設定してください。',
-    '・既存のBRIDGE ProofPack Starterとは別商品の納品パッケージです。',
-    '',
-    '発行元: 株式会社BRIDGE',
-  ];
-  if (supportFormUrl) {
-    lines.push('納品不備のご連絡窓口: ' + supportFormUrl);
-  }
-  return { subject: subject, body: lines.join('\n') };
-}
-
-function buildGenericDeliveryMailBody_(tokens) {
-  const lines = [
-    'このたびは「' + tokens.product_name + '」をご購入いただき、誠にありがとうございます。',
-    '',
-    '以下URLより納品データをご確認ください。',
-    '納品URL: ' + tokens.delivery_url,
-    '',
-    '発行元: 株式会社BRIDGE',
-  ];
-  if (tokens.support_url) {
-    lines.push('納品不備のご連絡窓口: ' + tokens.support_url);
-  }
-  return lines.join('\n');
-}
-
-function applyTemplate_(template, tokens) {
-  return String(template || '').replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, function (_, key) {
-    return Object.prototype.hasOwnProperty.call(tokens, key) ? tokens[key] : '';
-  });
-}
-
-function resolveProductForQueueRow_(productSheet, row, col, payload, payment) {
-  const queuedProductKey = typeof col.product_key !== 'undefined' ? String(row[col.product_key] || '') : '';
-  if (queuedProductKey && queuedProductKey !== 'UNKNOWN_PRODUCT') {
-    const productFromMaster = findProductByKey_(getActiveProductRows_(productSheet), queuedProductKey);
-    if (productFromMaster) {
-      return productFromMaster;
-    }
-    if (queuedProductKey === 'proofpack_starter') {
-      return getProofPackFallbackProduct_('queued', queuedProductKey);
-    }
-    return getUnknownProduct_();
-  }
-  return resolveProductFromPayment_(payload, payment, productSheet);
-}
-
-function resolveProductFromPayment_(payload, payment, productSheet) {
-  const products = getActiveProductRows_(productSheet);
-  const text = buildProductSearchText_(payload, payment);
-  const amount = payment && payment.amount_money && typeof payment.amount_money.amount !== 'undefined'
-    ? Number(payment.amount_money.amount)
-    : '';
-
-  const nonAmountMatch = findMatchingProduct_(products, text, amount, false);
-  if (nonAmountMatch) {
-    return nonAmountMatch;
-  }
-
-  const amountMatch = findMatchingProduct_(products, text, amount, true);
-  if (amountMatch) {
-    return amountMatch;
-  }
-
-  if (amount === 100) {
-    return getProofPackFallbackProduct_('amount', '100');
-  }
-
-  return getUnknownProduct_();
-}
-
-function findMatchingProduct_(products, text, amount, amountOnly) {
-  for (var i = 0; i < products.length; i++) {
-    const product = products[i];
-    const matchType = String(product.match_type || '').toLowerCase();
-    const matchValue = String(product.match_value || '');
-    if (!matchValue) {
-      continue;
-    }
-    if (amountOnly) {
-      if (matchType === 'amount' && Number(matchValue) === amount) {
-        product.match_type = 'amount';
-        product.match_value = matchValue;
-        return product;
-      }
-      continue;
-    }
-    if (matchType === 'amount') {
-      continue;
-    }
-    if ((matchType === 'product_key' || matchType === 'key') && text.indexOf(String(product.product_key || '').toLowerCase()) >= 0) {
-      product.match_type = matchType;
-      product.match_value = product.product_key;
-      return product;
-    }
-    if ((matchType === 'product_name' || matchType === 'name') && text.indexOf(String(product.product_name || '').toLowerCase()) >= 0) {
-      product.match_type = matchType;
-      product.match_value = product.product_name;
-      return product;
-    }
-    if (text.indexOf(matchValue.toLowerCase()) >= 0) {
-      product.match_type = matchType || 'text';
-      product.match_value = matchValue;
-      return product;
-    }
-  }
-  return null;
-}
-
-function getActiveProductRows_(productSheet) {
-  if (!productSheet || productSheet.getLastRow() <= 1) {
-    return [];
-  }
-  const values = productSheet.getDataRange().getValues();
-  const headers = values[0];
-  const col = getHeaderIndexMap_(headers);
-  const products = [];
-  for (var i = 1; i < values.length; i++) {
-    const row = values[i];
-    const active = String(row[col.active] || '').toLowerCase();
-    const productKey = String(row[col.product_key] || '');
-    if (!productKey || ['true', '1', 'yes', 'y'].indexOf(active) < 0) {
-      continue;
-    }
-    products.push({
-      product_key: productKey,
-      product_name: String(row[col.product_name] || productKey),
-      active: String(row[col.active] || ''),
-      match_type: String(row[col.match_type] || ''),
-      match_value: String(row[col.match_value] || ''),
-      delivery_url: String(row[col.delivery_url] || ''),
-      mail_subject: String(row[col.mail_subject] || ''),
-      mail_body_template: String(row[col.mail_body_template] || ''),
-      support_url: String(row[col.support_url] || ''),
-      notes: String(row[col.notes] || ''),
-    });
-  }
-  return products;
-}
-
-function findProductByKey_(products, productKey) {
-  for (var i = 0; i < products.length; i++) {
-    if (String(products[i].product_key) === String(productKey)) {
-      return products[i];
-    }
-  }
-  if (String(productKey) === 'proofpack_starter') {
-    return getProofPackFallbackProduct_('queued', productKey);
-  }
-  return null;
-}
-
-function buildProductSearchText_(payload, payment) {
-  const candidates = [
-    payment && payment.note,
-    payment && payment.order_id,
-    payment && payment.payment_link_id,
-    payment && payment.checkout_id,
-    payment && payment.receipt_number,
-    payment && payment.receipt_url,
-    payload && payload.merchant_id,
-    JSON.stringify(payload || {}),
-  ];
-  return candidates.filter(Boolean).join(' ').toLowerCase();
-}
-
-function getProofPackFallbackProduct_(matchType, matchValue) {
-  return {
-    product_key: 'proofpack_starter',
-    product_name: 'BRIDGE ProofPack Starter',
-    active: 'TRUE',
-    match_type: matchType || 'fallback',
-    match_value: matchValue || '',
-    delivery_url: '',
-    mail_subject: '',
-    mail_body_template: '',
-    support_url: '',
-    notes: 'Backward-compatible fallback for the existing ProofPack Starter delivery.',
-  };
-}
-
-function getUnknownProduct_() {
-  return {
-    product_key: 'UNKNOWN_PRODUCT',
-    product_name: '',
-    active: 'FALSE',
-    match_type: 'none',
-    match_value: '',
-    delivery_url: '',
-    mail_subject: '',
-    mail_body_template: '',
-    support_url: '',
-  };
-}
-
-function parseJsonSafe_(rawJson) {
-  try {
-    return JSON.parse(String(rawJson || '{}'));
-  } catch (err) {
-    return {};
-  }
-}
-
-function TEST_resolveProductFromSamplePayload() {
-  const payload = buildSampleSquarePaymentPayload_('payment-test-proofpack', 100, 'BRIDGE ProofPack Starter');
-  const product = resolveProductFromPayment_(payload, payload.data.object.payment, null);
-  return { ok: product.product_key === 'proofpack_starter', product: product };
-}
-
-function TEST_buildDeliveryMailByProduct() {
-  const product = {
-    product_key: 'estimate_front',
-    product_name: 'BRIDGE 見積前受付フロント',
-    mail_subject: '【納品】{{product_name}}',
-    mail_body_template: 'ご購入ありがとうございます。\n納品URL: {{delivery_url}}\nお問い合わせ: {{support_url}}',
-    delivery_url: 'https://example.com/estimate-front',
-    support_url: 'https://example.com/support',
-  };
-  const mail = buildDeliveryMailByProduct_(product, {
-    shopName: 'BRIDGE OS',
-    deliveryUrl: product.delivery_url,
-    supportFormUrl: product.support_url,
-    buyerEmail: 'buyer@example.com',
-    paymentId: 'payment-test-estimate',
-    eventId: 'event-test-estimate',
-  });
-  return { ok: mail.subject.indexOf(product.product_name) >= 0 && mail.body.indexOf(product.delivery_url) >= 0, mail: mail };
-}
-
-function TEST_processFulfillmentQueue_dryRun() {
-  return processFulfillmentQueue_({ dryRun: true });
-}
-
-function TEST_duplicateProtection_paymentIdAlreadySent() {
-  const ss = getSpreadsheet_();
-  const sheets = ensureSystemSheets_(ss);
-  const paymentId = buildTestPaymentId_('test-duplicate-sent');
-  const eventId = 'event-' + paymentId;
-  const now = new Date().toISOString();
-  const payload = buildSampleSquarePaymentPayload_(paymentId, 100, 'BRIDGE ProofPack Starter');
-
-  appendFulfillmentLog_(sheets.fulfillmentLog, {
-    sent_at: now,
-    payment_id: paymentId,
-    event_id: eventId,
-    buyer_email: 'buyer@example.com',
-    delivery_url: 'https://example.com/test-delivery',
-    mail_subject: 'duplicate protection test',
-    mail_body_hash: 'test',
-    status: 'SENT',
-    created_at: now,
-    product_key: 'proofpack_starter',
-    product_name: 'BRIDGE ProofPack Starter',
-  });
-
-  appendRowByHeader_(sheets.queue, {
-    received_at: now,
-    status: 'ENQUEUED',
-    payment_id: paymentId,
-    event_id: eventId,
-    buyer_email: 'buyer@example.com',
-    amount: 100,
-    currency: 'JPY',
-    raw_json: JSON.stringify(payload),
-    tries: 0,
-    last_error: '',
-    updated_at: now,
-    product_key: 'proofpack_starter',
-    product_name: 'BRIDGE ProofPack Starter',
-    match_type: 'test',
-    match_value: 'duplicate_protection',
-  });
-
-  const sentCountBefore = countPaymentIdSentInFulfillmentLog_(sheets.fulfillmentLog, paymentId);
-  const result = processFulfillmentQueue_({ dryRun: false, onlyPaymentId: paymentId });
-  const sentCountAfter = countPaymentIdSentInFulfillmentLog_(sheets.fulfillmentLog, paymentId);
-  const queueRow = findLatestRowObjectByPaymentId_(sheets.queue, paymentId, 'payment_id', 3);
-
-  return {
-    ok: result.ok === true &&
-      result.failed === 0 &&
-      result.skipped >= 1 &&
-      sentCountAfter === sentCountBefore &&
-      queueRow.status === 'DUPLICATE_SKIPPED' &&
-      queueRow.last_error === 'duplicate payment_id already sent',
-    result: result,
-    payment_id: paymentId,
-    sent_count_before: sentCountBefore,
-    sent_count_after: sentCountAfter,
-    queue_status: queueRow.status,
-    queue_last_error: queueRow.last_error,
-  };
-}
-
-function TEST_duplicateProtection_queueDuplicateDryRun() {
-  const ss = getSpreadsheet_();
-  const sheets = ensureSystemSheets_(ss);
-  const paymentId = buildTestPaymentId_('test-queue-duplicate');
-  const eventId = 'event-' + paymentId;
-  const payload = buildSampleSquarePaymentPayload_(paymentId, 100, 'BRIDGE ProofPack Starter');
-  const rawData = JSON.stringify(payload);
-  const product = getProofPackFallbackProduct_('test', 'queue_duplicate');
-
-  const countBefore = countPaymentIdInQueue_(sheets.queue, paymentId);
-  const firstAppend = appendQueueIfNotExists_(sheets.queue, eventId, paymentId, 'buyer@example.com', 100, 'JPY', rawData, product);
-  const secondAppend = appendQueueIfNotExists_(sheets.queue, eventId + '-duplicate', paymentId, 'buyer@example.com', 100, 'JPY', rawData, product);
-  const countAfterAppend = countPaymentIdInQueue_(sheets.queue, paymentId);
-
-  markQueueRowsForTest_(sheets.queue, paymentId, 'TEST_ONLY');
-  const dryRunResult = processFulfillmentQueue_({ dryRun: true, onlyPaymentId: paymentId });
-
-  return {
-    ok: firstAppend === true &&
-      secondAppend === false &&
-      countAfterAppend === countBefore + 1 &&
-      dryRunResult.ok === true,
-    payment_id: paymentId,
-    count_before: countBefore,
-    count_after_append: countAfterAppend,
-    first_append: firstAppend,
-    second_append: secondAppend,
-    dry_run_result: dryRunResult,
-  };
-}
-
-function buildTestPaymentId_(prefix) {
-  return prefix + '-' + new Date().getTime() + '-' + Math.floor(Math.random() * 100000);
-}
-
-function countPaymentIdInQueue_(queueSheet, paymentId) {
-  return countPaymentIdInSheetColumn_(queueSheet, paymentId, 'payment_id', 3);
-}
-
-function countPaymentIdSentInFulfillmentLog_(fulfillmentLogSheet, paymentId) {
-  if (!paymentId || !fulfillmentLogSheet || fulfillmentLogSheet.getLastRow() <= 1) {
-    return 0;
-  }
-
-  const values = fulfillmentLogSheet.getDataRange().getValues();
-  const col = getHeaderIndexMap_(values[0]);
-  const paymentIdIndex = typeof col.payment_id !== 'undefined' ? col.payment_id : 1;
-  const statusIndex = typeof col.status !== 'undefined' ? col.status : 7;
-  const targetPaymentId = String(paymentId);
-  let count = 0;
-  for (var i = 1; i < values.length; i++) {
-    if (String(values[i][paymentIdIndex] || '') === targetPaymentId &&
-        String(values[i][statusIndex] || '').toUpperCase() === 'SENT') {
-      count++;
-    }
-  }
-  return count;
-}
-
-function countPaymentIdInSheetColumn_(sheet, paymentId, headerName, fallbackColumn) {
-  if (!paymentId || !sheet || sheet.getLastRow() <= 1) {
-    return 0;
-  }
-
-  const columnNumber = getHeaderColumnNumber_(sheet, headerName, fallbackColumn);
-  if (!columnNumber) {
-    return 0;
-  }
-
-  const values = sheet.getRange(2, columnNumber, sheet.getLastRow() - 1, 1).getValues();
-  const targetPaymentId = String(paymentId);
-  let count = 0;
-  values.forEach(function (row) {
-    if (String(row[0] || '') === targetPaymentId) {
-      count++;
-    }
-  });
-  return count;
-}
-
-function findLatestRowObjectByPaymentId_(sheet, paymentId, headerName, fallbackColumn) {
-  if (!paymentId || !sheet || sheet.getLastRow() <= 1) {
-    return {};
-  }
-
-  const values = sheet.getDataRange().getValues();
-  const headers = values[0];
-  const col = getHeaderIndexMap_(headers);
-  const paymentIdIndex = typeof col[headerName] !== 'undefined' ? col[headerName] : fallbackColumn - 1;
-  const targetPaymentId = String(paymentId);
-  for (var i = values.length - 1; i >= 1; i--) {
-    if (String(values[i][paymentIdIndex] || '') === targetPaymentId) {
-      const rowObj = { _row: i + 1 };
-      headers.forEach(function (header, index) {
-        rowObj[String(header)] = values[i][index];
-      });
-      return rowObj;
-    }
-  }
-  return {};
-}
-
-function markQueueRowsForTest_(queueSheet, paymentId, status) {
-  if (!paymentId || !queueSheet || queueSheet.getLastRow() <= 1) {
-    return;
-  }
-
-  const values = queueSheet.getDataRange().getValues();
-  const col = getHeaderIndexMap_(values[0]);
-  if (typeof col.payment_id === 'undefined' || typeof col.status === 'undefined') {
-    return;
-  }
-
-  const targetPaymentId = String(paymentId);
-  for (var i = 1; i < values.length; i++) {
-    if (String(values[i][col.payment_id] || '') === targetPaymentId) {
-      safeSetCellByHeader_(queueSheet, i + 1, col, 'status', status);
-      safeSetCellByHeader_(queueSheet, i + 1, col, 'updated_at', new Date().toISOString());
-    }
-  }
-}
-
-function buildSampleSquarePaymentPayload_(paymentId, amount, note) {
-  return {
-    event_id: 'event-' + paymentId,
-    type: 'payment.updated',
-    data: {
-      object: {
-        payment: {
-          id: paymentId,
-          status: 'COMPLETED',
-          amount_money: { amount: amount, currency: 'JPY' },
-          buyer_email_address: 'buyer@example.com',
-          note: note,
-        },
-      },
-    },
-  };
-}
-
-function isProofPackExternalAiIntakePayload_(payload) {
-  if (!payload) {
-    return false;
-  }
-  const source = normalizeProofPackSource_(payload.source || payload.channel || payload.intake_source);
-  const externalSources = ['line', 'gmail', 'lp'];
-  if (externalSources.indexOf(source) < 0) {
-    return false;
-  }
-  const type = String(payload.type || payload.event_type || '').toLowerCase();
-  return type === 'proofpack.ai_intake' || type === 'proofpack_ai_intake' || !!extractProofPackOriginalMessageFromPayload_(payload);
-}
-
-function recordProofPackExternalAiIntake_(aiIntakeLogSheet, payload, rawData) {
-  const context = buildProofPackExternalAiIntakeContext_(payload, rawData);
-  return maybeCreateProofPackAiIntake_(aiIntakeLogSheet, context);
-}
-
-function buildProofPackExternalAiIntakeContext_(payload, rawData) {
-  const source = normalizeProofPackSource_(payload.source || payload.channel || payload.intake_source);
-  return {
-    source: source,
-    payment_id: String(payload.payment_id || payload.paymentId || ''),
-    event_id: extractProofPackExternalEventId_(payload, source),
-    buyer_email: extractProofPackExternalEmail_(payload),
-    raw_json: rawData,
-    original_message: extractProofPackOriginalMessageFromPayload_(payload),
-  };
-}
-
-function extractProofPackExternalEventId_(payload, source) {
-  const candidates = [
-    payload.event_id,
-    payload.eventId,
-    payload.message_id,
-    payload.messageId,
-    payload.gmail_message_id,
-    payload.line_event_id,
-    payload.inquiry_id,
-    payload.id,
-  ];
-  for (var i = 0; i < candidates.length; i++) {
-    if (candidates[i]) {
-      return String(candidates[i]);
-    }
-  }
-  return source + '-' + toSha256Hex_(JSON.stringify(payload)).slice(0, 16);
+    return false…8495 tokens truncated… source + '-' + toSha256Hex_(JSON.stringify(payload)).slice(0, 16);
 }
 
 function extractProofPackExternalEmail_(payload) {
@@ -1609,4 +1041,26 @@ function jsonResponse_(obj) {
   return ContentService
     .createTextOutput(JSON.stringify(obj))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+/**
+ * Web App GET entrypoint.
+ *
+ * - Panicフォーム表示は PanicPdfAddon.gs の panicHandleDoGet_(e) に渡す
+ * - 通常アクセスでは OK を返す
+ */
+function doGet(e) {
+  try {
+    bridgeEnsurePanicProductMap_();
+    var panicGet = panicHandleDoGet_(e);
+    if (panicGet) return panicGet;
+
+    return ContentService
+      .createTextOutput('OK')
+      .setMimeType(ContentService.MimeType.TEXT);
+  } catch (err) {
+    return ContentService
+      .createTextOutput('ERROR: doGet failed: ' + (err && err.message ? err.message : err))
+      .setMimeType(ContentService.MimeType.TEXT);
+  }
 }
